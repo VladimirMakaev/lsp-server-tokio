@@ -15,11 +15,15 @@
 //! - [`Response`] - JSON-RPC response with result or error
 //! - [`Notification`] - JSON-RPC notification (no id, no response)
 //!
-//! ## Transport
+//! ## Transport Layer
 //!
-//! - [`LspCodec`] - Wire protocol codec implementing Content-Length framing
+//! - [`Transport`] - Type alias for `Framed<T, LspCodec>` providing Stream + Sink
+//! - [`transport()`] - Factory function wrapping any AsyncRead + AsyncWrite
+//! - [`duplex_transport`] - Creates connected in-memory transports for testing
+//! - [`LspCodec`] - Encoder/Decoder for Content-Length message framing
 
 pub mod codec;
+pub mod transport;
 pub mod error;
 pub mod message;
 pub mod request_id;
@@ -28,3 +32,4 @@ pub use codec::LspCodec;
 pub use error::{ErrorCode, ResponseError};
 pub use message::{Message, Notification, Request, Response};
 pub use request_id::RequestId;
+pub use transport::{duplex_transport, transport, Transport};
