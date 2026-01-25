@@ -5,6 +5,39 @@
 //! This crate provides transport-agnostic async LSP server infrastructure that handles
 //! protocol concerns so developers can focus on language-specific logic.
 //!
+//! ## Quick Start
+//!
+//! ```ignore
+//! use lsp_server_tokio::{duplex_transport, Message, Request, Response};
+//! use futures::{SinkExt, StreamExt};
+//!
+//! #[tokio::main]
+//! async fn main() -> std::io::Result<()> {
+//!     // Create in-memory transport pair for testing
+//!     let (mut client, mut server) = duplex_transport(4096);
+//!
+//!     // Send a request from client
+//!     let request = Message::Request(Request::new(1, "textDocument/hover", None));
+//!     client.send(request).await?;
+//!
+//!     // Receive on server
+//!     if let Some(Ok(Message::Request(req))) = server.next().await {
+//!         println!("Received: {}", req.method);
+//!
+//!         // Send response back
+//!         let response = Message::Response(Response::ok(1, serde_json::json!({"contents": "Hello"})));
+//!         server.send(response).await?;
+//!     }
+//!
+//!     // Receive response on client
+//!     if let Some(Ok(Message::Response(resp))) = client.next().await {
+//!         println!("Got response for id: {:?}", resp.id);
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
 //! ## Core Types
 //!
 //! - [`RequestId`] - Identifies requests/responses (supports both integer and string IDs)
@@ -19,7 +52,7 @@
 //!
 //! - [`Transport`] - Type alias for `Framed<T, LspCodec>` providing Stream + Sink
 //! - [`transport()`] - Factory function wrapping any AsyncRead + AsyncWrite
-//! - [`duplex_transport`] - Creates connected in-memory transports for testing
+//! - [`duplex_transport()`] - Creates connected in-memory transports for testing
 //! - [`LspCodec`] - Encoder/Decoder for Content-Length message framing
 
 pub mod codec;
