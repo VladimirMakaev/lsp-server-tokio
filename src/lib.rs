@@ -14,11 +14,17 @@
 //! - [`Request`] - JSON-RPC request with id and method
 //! - [`Response`] - JSON-RPC response with result or error
 //! - [`Notification`] - JSON-RPC notification (no id, no response)
+//!
+//! ## Transport
+//!
+//! - [`LspCodec`] - Wire protocol codec implementing Content-Length framing
 
+pub mod codec;
 pub mod error;
 pub mod message;
 pub mod request_id;
 
+pub use codec::LspCodec;
 pub use error::{ErrorCode, ResponseError};
 pub use message::{Message, Notification, Request, Response};
 pub use request_id::RequestId;
