@@ -10,9 +10,15 @@
 //! - [`RequestId`] - Identifies requests/responses (supports both integer and string IDs)
 //! - [`ErrorCode`] - LSP specification error codes
 //! - [`ResponseError`] - Error responses with code, message, and optional data
+//! - [`Message`] - Discriminated union of Request, Response, and Notification
+//! - [`Request`] - JSON-RPC request with id and method
+//! - [`Response`] - JSON-RPC response with result or error
+//! - [`Notification`] - JSON-RPC notification (no id, no response)
 
 pub mod error;
+pub mod message;
 pub mod request_id;
 
 pub use error::{ErrorCode, ResponseError};
+pub use message::{Message, Notification, Request, Response};
 pub use request_id::RequestId;

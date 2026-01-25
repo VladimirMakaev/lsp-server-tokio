@@ -172,3 +172,67 @@ impl Notification {
         }
     }
 }
+
+/// A JSON-RPC 2.0 message that can be a Request, Response, or Notification.
+///
+/// This enum uses `#[serde(untagged)]` for automatic discrimination based on
+/// the presence of specific fields:
+///
+/// - **Request**: Has `id` AND `method` fields
+/// - **Response**: Has `id` AND (`result` OR `error`) fields
+/// - **Notification**: Has `method` field but NO `id` field
+///
+/// # Variant Order
+///
+/// The variant order is critical for correct deserialization:
+/// 1. Request (most specific - has both `id` and `method`)
+/// 2. Response (has `id` with `result` or `error`)
+/// 3. Notification (has `method` but no `id`)
+///
+/// # Examples
+///
+/// ```
+/// use lsp_server_tokio::Message;
+///
+/// // Request discrimination
+/// let json = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
+/// let msg: Message = serde_json::from_str(json).unwrap();
+/// assert!(msg.is_request());
+///
+/// // Response discrimination
+/// let json = r#"{"jsonrpc":"2.0","id":1,"result":null}"#;
+/// let msg: Message = serde_json::from_str(json).unwrap();
+/// assert!(msg.is_response());
+///
+/// // Notification discrimination
+/// let json = r#"{"jsonrpc":"2.0","method":"test"}"#;
+/// let msg: Message = serde_json::from_str(json).unwrap();
+/// assert!(msg.is_notification());
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Message {
+    /// A request message (has `id` and `method`).
+    Request(Request),
+    /// A response message (has `id` with `result` or `error`).
+    Response(Response),
+    /// A notification message (has `method` but no `id`).
+    Notification(Notification),
+}
+
+impl Message {
+    /// Returns `true` if this is a Request message.
+    pub fn is_request(&self) -> bool {
+        matches!(self, Message::Request(_))
+    }
+
+    /// Returns `true` if this is a Response message.
+    pub fn is_response(&self) -> bool {
+        matches!(self, Message::Response(_))
+    }
+
+    /// Returns `true` if this is a Notification message.
+    pub fn is_notification(&self) -> bool {
+        matches!(self, Message::Notification(_))
+    }
+}
