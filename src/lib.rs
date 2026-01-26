@@ -53,6 +53,7 @@
 //! - [`LspCodec`] - Encoder/Decoder for Content-Length message framing
 
 pub mod codec;
+pub mod connection;
 pub mod error;
 pub mod message;
 pub mod request_id;
@@ -64,4 +65,5 @@ pub use error::{ErrorCode, ResponseError};
 pub use message::{Message, Notification, Request, Response};
 pub use request_id::RequestId;
 pub use request_queue::{IncomingRequests, OutgoingRequests, RequestQueue};
+pub use connection::{Connection, Receiver, Sender};
 pub use transport::{duplex_transport, transport, Transport};
