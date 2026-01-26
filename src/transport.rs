@@ -11,21 +11,22 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
 //! use futures::{SinkExt, StreamExt};
-//! use lsp_server_tokio::{transport, Message, Request};
+//! use lsp_server_tokio::{duplex_transport, Message, Request};
 //!
-//! // Wrap any async I/O stream
-//! let transport = transport(io_stream);
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! // Use duplex_transport for testing without real I/O
+//! let (mut client, mut server) = duplex_transport(1024);
 //!
-//! // Receive messages
-//! while let Some(msg) = transport.next().await {
-//!     match msg? {
-//!         Message::Request(req) => { /* handle request */ }
-//!         Message::Response(resp) => { /* handle response */ }
-//!         Message::Notification(notif) => { /* handle notification */ }
-//!     }
-//! }
+//! // Send a request
+//! let request = Message::Request(Request::new(1, "test/method", None));
+//! client.send(request).await.unwrap();
+//!
+//! // Receive the message
+//! let msg = server.next().await.unwrap().unwrap();
+//! assert!(msg.is_request());
+//! # });
 //! ```
 //!
 //! # Testing
@@ -33,12 +34,18 @@
 //! For testing without real I/O, use [`duplex_transport`] to create a pair of
 //! connected in-memory transports:
 //!
-//! ```ignore
+//! ```
+//! # use futures::{SinkExt, StreamExt};
+//! # use lsp_server_tokio::{duplex_transport, Message, Request};
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! let (mut client, mut server) = duplex_transport(1024);
 //!
 //! // Messages sent on one side are received by the other
-//! client.send(request).await?;
-//! let received = server.next().await.unwrap()?;
+//! let request = Message::Request(Request::new(1, "test", None));
+//! client.send(request).await.unwrap();
+//! let received = server.next().await.unwrap().unwrap();
+//! assert!(received.is_request());
+//! # });
 //! ```
 
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
@@ -60,19 +67,24 @@ use crate::LspCodec;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use futures::{SinkExt, StreamExt};
-/// use lsp_server_tokio::{transport, Message, Request};
+/// use lsp_server_tokio::{duplex_transport, Message, Request};
 ///
-/// async fn handle_connection<T: AsyncRead + AsyncWrite + Unpin>(io: T) {
-///     let mut transport = transport(io);
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+/// let (mut client, mut server) = duplex_transport(1024);
 ///
-///     // Receive messages
-///     while let Some(result) = transport.next().await {
-///         let msg = result.expect("I/O error");
-///         // Process message...
-///     }
+/// // Send a message
+/// let request = Message::Request(Request::new(1, "test", None));
+/// client.send(request).await.unwrap();
+///
+/// // Receive messages
+/// while let Some(result) = server.next().await {
+///     let msg = result.expect("I/O error");
+///     assert!(msg.is_request());
+///     break; // Exit after first message for doctest
 /// }
+/// # });
 /// ```
 pub type Transport<T> = Framed<T, LspCodec>;
 
@@ -91,12 +103,15 @@ pub type Transport<T> = Framed<T, LspCodec>;
 ///
 /// # Example
 ///
-/// ```ignore
-/// use tokio::net::TcpStream;
+/// ```
 /// use lsp_server_tokio::transport;
+/// use tokio::io::DuplexStream;
 ///
-/// let stream = TcpStream::connect("127.0.0.1:8080").await?;
-/// let mut transport = transport(stream);
+/// // Create any AsyncRead + AsyncWrite stream
+/// let (stream, _) = tokio::io::duplex(1024);
+///
+/// // Wrap it in an LSP transport
+/// let transport: lsp_server_tokio::Transport<DuplexStream> = transport(stream);
 /// ```
 pub fn transport<T>(io: T) -> Transport<T>
 where
@@ -121,19 +136,21 @@ where
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use futures::{SinkExt, StreamExt};
 /// use lsp_server_tokio::{duplex_transport, Message, Request};
 ///
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 /// let (mut client, mut server) = duplex_transport(1024);
 ///
 /// // Send from client
 /// let request = Message::Request(Request::new(1, "test/method", None));
-/// client.send(request).await?;
+/// client.send(request).await.unwrap();
 ///
 /// // Receive on server
-/// let received = server.next().await.unwrap()?;
+/// let received = server.next().await.unwrap().unwrap();
 /// assert!(received.is_request());
+/// # });
 /// ```
 pub fn duplex_transport(buffer_size: usize) -> (Transport<DuplexStream>, Transport<DuplexStream>) {
     let (a, b) = tokio::io::duplex(buffer_size);
