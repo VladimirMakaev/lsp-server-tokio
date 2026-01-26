@@ -7,35 +7,32 @@
 //!
 //! ## Quick Start
 //!
-//! ```ignore
+//! ```
 //! use lsp_server_tokio::{duplex_transport, Message, Request, Response};
 //! use futures::{SinkExt, StreamExt};
 //!
-//! #[tokio::main]
-//! async fn main() -> std::io::Result<()> {
-//!     // Create in-memory transport pair for testing
-//!     let (mut client, mut server) = duplex_transport(4096);
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! // Create in-memory transport pair for testing
+//! let (mut client, mut server) = duplex_transport(4096);
 //!
-//!     // Send a request from client
-//!     let request = Message::Request(Request::new(1, "textDocument/hover", None));
-//!     client.send(request).await?;
+//! // Send a request from client
+//! let request = Message::Request(Request::new(1, "textDocument/hover", None));
+//! client.send(request).await.unwrap();
 //!
-//!     // Receive on server
-//!     if let Some(Ok(Message::Request(req))) = server.next().await {
-//!         println!("Received: {}", req.method);
+//! // Receive on server
+//! if let Some(Ok(Message::Request(req))) = server.next().await {
+//!     println!("Received: {}", req.method);
 //!
-//!         // Send response back
-//!         let response = Message::Response(Response::ok(1, serde_json::json!({"contents": "Hello"})));
-//!         server.send(response).await?;
-//!     }
-//!
-//!     // Receive response on client
-//!     if let Some(Ok(Message::Response(resp))) = client.next().await {
-//!         println!("Got response for id: {:?}", resp.id);
-//!     }
-//!
-//!     Ok(())
+//!     // Send response back
+//!     let response = Message::Response(Response::ok(1, serde_json::json!({"contents": "Hello"})));
+//!     server.send(response).await.unwrap();
 //! }
+//!
+//! // Receive response on client
+//! if let Some(Ok(Message::Response(resp))) = client.next().await {
+//!     println!("Got response for id: {:?}", resp.id);
+//! }
+//! # });
 //! ```
 //!
 //! ## Core Types
@@ -56,13 +53,15 @@
 //! - [`LspCodec`] - Encoder/Decoder for Content-Length message framing
 
 pub mod codec;
-pub mod transport;
 pub mod error;
 pub mod message;
 pub mod request_id;
+pub mod request_queue;
+pub mod transport;
 
 pub use codec::LspCodec;
 pub use error::{ErrorCode, ResponseError};
 pub use message::{Message, Notification, Request, Response};
 pub use request_id::RequestId;
+pub use request_queue::{IncomingRequests, OutgoingRequests, RequestQueue};
 pub use transport::{duplex_transport, transport, Transport};
