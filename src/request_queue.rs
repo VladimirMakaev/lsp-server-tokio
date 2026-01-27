@@ -381,6 +381,78 @@ mod tests {
         assert_eq!(incoming.pending_count(), 0);
     }
 
+    #[test]
+    fn incoming_cancel_triggers_token() {
+        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+
+        incoming.register(1.into(), "data".to_string(), token);
+
+        // Cancel the request
+        assert!(incoming.cancel(&1.into()));
+
+        // Token should be cancelled
+        assert!(token_clone.is_cancelled());
+    }
+
+    #[test]
+    fn incoming_cancel_unknown_returns_false() {
+        let incoming: IncomingRequests<()> = IncomingRequests::new();
+        assert!(!incoming.cancel(&999.into()));
+    }
+
+    #[test]
+    fn incoming_cancel_idempotent() {
+        let mut incoming: IncomingRequests<()> = IncomingRequests::new();
+        let token = CancellationToken::new();
+
+        incoming.register(1.into(), (), token);
+
+        // Cancel twice - both should succeed
+        assert!(incoming.cancel(&1.into()));
+        assert!(incoming.cancel(&1.into())); // Still returns true, request still pending
+    }
+
+    #[test]
+    fn incoming_get_token_returns_clone() {
+        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+        let original_token = CancellationToken::new();
+
+        incoming.register(1.into(), "data".to_string(), original_token.clone());
+
+        // Get the token
+        let retrieved = incoming.get_token(&1.into());
+        assert!(retrieved.is_some());
+
+        // Cancel via retrieved token
+        retrieved.unwrap().cancel();
+
+        // Original should also be cancelled (they're the same underlying token)
+        assert!(original_token.is_cancelled());
+    }
+
+    #[test]
+    fn incoming_get_token_unknown_returns_none() {
+        let incoming: IncomingRequests<()> = IncomingRequests::new();
+        assert!(incoming.get_token(&999.into()).is_none());
+    }
+
+    #[test]
+    fn incoming_complete_after_cancel_returns_data() {
+        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+        let token = CancellationToken::new();
+
+        incoming.register(1.into(), "cancelled_data".to_string(), token);
+
+        // Cancel first
+        incoming.cancel(&1.into());
+
+        // Complete should still return the data
+        let data = incoming.complete(&1.into());
+        assert_eq!(data, Some("cancelled_data".to_string()));
+    }
+
     // ============== OutgoingRequests Tests ==============
 
     #[tokio::test]
