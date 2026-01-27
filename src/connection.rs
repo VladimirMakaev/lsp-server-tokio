@@ -335,6 +335,210 @@ where
     }
 }
 
+// Lifecycle management methods
+impl<T, I, O> Connection<T, I, O>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    /// Waits for the initialize request from the client.
+    ///
+    /// This method blocks until an initialize request is received, rejecting
+    /// any other requests with `ServerNotInitialized` error and dropping
+    /// notifications (except exit which disconnects).
+    ///
+    /// Returns the request ID and params for the initialize request.
+    /// You must call [`initialize_finish()`](Self::initialize_finish) with the
+    /// same ID to complete the handshake.
+    ///
+    /// # Errors
+    ///
+    /// - [`ProtocolError::Disconnected`] if the connection is closed or exit notification received
+    /// - [`ProtocolError::Io`] if an I/O error occurs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use lsp_server_tokio::Connection;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
+    ///
+    /// let (id, params) = conn.initialize_start().await.unwrap();
+    /// // Process params, build capabilities...
+    /// let capabilities = serde_json::json!({"textDocumentSync": 1});
+    /// conn.initialize_finish(id, capabilities).await.unwrap();
+    /// # });
+    /// ```
+    pub async fn initialize_start(
+        &mut self,
+    ) -> Result<(crate::RequestId, serde_json::Value), ProtocolError> {
+        use futures::SinkExt;
+
+        loop {
+            match self.receiver.next().await {
+                Some(Ok(Message::Request(req))) => {
+                    if req.method == "initialize" {
+                        self.lifecycle_state = LifecycleState::Initializing;
+                        return Ok((
+                            req.id,
+                            req.params.unwrap_or(serde_json::Value::Null),
+                        ));
+                    } else {
+                        // Reject non-initialize requests with ServerNotInitialized
+                        let error = crate::ResponseError::new(
+                            crate::ErrorCode::ServerNotInitialized,
+                            "Server not yet initialized",
+                        );
+                        let response = Message::Response(crate::Response::err(req.id, error));
+                        if let Err(e) = self.sender.send(response).await {
+                            return Err(ProtocolError::Io(e));
+                        }
+                        // Continue waiting for initialize
+                    }
+                }
+                Some(Ok(Message::Notification(notif))) => {
+                    if notif.method == "exit" {
+                        return Err(ProtocolError::Disconnected);
+                    }
+                    // Drop other notifications silently
+                }
+                Some(Ok(Message::Response(_))) => {
+                    // Unexpected response, ignore
+                }
+                Some(Err(e)) => {
+                    return Err(ProtocolError::Io(e));
+                }
+                None => {
+                    return Err(ProtocolError::Disconnected);
+                }
+            }
+        }
+    }
+
+    /// Completes the initialization handshake.
+    ///
+    /// Sends the InitializeResult response and waits for the initialized
+    /// notification from the client. After this returns `Ok(())`, the
+    /// connection is in Running state and ready for normal operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The request ID from [`initialize_start()`](Self::initialize_start)
+    /// * `server_capabilities` - The server's capabilities as JSON
+    ///
+    /// # Errors
+    ///
+    /// - [`ProtocolError::Disconnected`] if the connection is closed
+    /// - [`ProtocolError::Io`] if an I/O error occurs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use lsp_server_tokio::Connection;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
+    ///
+    /// let (id, _params) = conn.initialize_start().await.unwrap();
+    /// let capabilities = serde_json::json!({"textDocumentSync": 1});
+    /// conn.initialize_finish(id, capabilities).await.unwrap();
+    ///
+    /// assert!(conn.is_running());
+    /// # });
+    /// ```
+    pub async fn initialize_finish(
+        &mut self,
+        id: crate::RequestId,
+        server_capabilities: serde_json::Value,
+    ) -> Result<(), ProtocolError> {
+        use futures::SinkExt;
+
+        // Build InitializeResult
+        let result = serde_json::json!({
+            "capabilities": server_capabilities
+        });
+
+        // Send the response
+        let response = Message::Response(crate::Response::ok(id, result));
+        if let Err(e) = self.sender.send(response).await {
+            return Err(ProtocolError::Io(e));
+        }
+
+        // Wait for initialized notification
+        loop {
+            match self.receiver.next().await {
+                Some(Ok(Message::Notification(notif))) => {
+                    if notif.method == "initialized" {
+                        self.lifecycle_state = LifecycleState::Running;
+                        return Ok(());
+                    }
+                    // Drop other notifications silently
+                }
+                Some(Ok(Message::Request(req))) => {
+                    // Still initializing, reject with ServerNotInitialized
+                    let error = crate::ResponseError::new(
+                        crate::ErrorCode::ServerNotInitialized,
+                        "Server not yet initialized",
+                    );
+                    let response = Message::Response(crate::Response::err(req.id, error));
+                    if let Err(e) = self.sender.send(response).await {
+                        return Err(ProtocolError::Io(e));
+                    }
+                }
+                Some(Ok(Message::Response(_))) => {
+                    // Ignore unexpected responses
+                }
+                Some(Err(e)) => {
+                    return Err(ProtocolError::Io(e));
+                }
+                None => {
+                    return Err(ProtocolError::Disconnected);
+                }
+            }
+        }
+    }
+
+    /// Performs complete LSP initialization handshake.
+    ///
+    /// This is a convenience method that calls [`initialize_start()`](Self::initialize_start)
+    /// followed by [`initialize_finish()`](Self::initialize_finish).
+    /// Returns the initialize params from the client.
+    ///
+    /// # Arguments
+    ///
+    /// * `server_capabilities` - The server's capabilities as JSON
+    ///
+    /// # Errors
+    ///
+    /// - [`ProtocolError::Disconnected`] if the connection is closed
+    /// - [`ProtocolError::Io`] if an I/O error occurs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use lsp_server_tokio::Connection;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
+    ///
+    /// let capabilities = serde_json::json!({"textDocumentSync": 1});
+    /// let client_params = conn.initialize(capabilities).await.unwrap();
+    /// println!("Client capabilities: {}", client_params);
+    /// # });
+    /// ```
+    pub async fn initialize(
+        &mut self,
+        server_capabilities: serde_json::Value,
+    ) -> Result<serde_json::Value, ProtocolError> {
+        let (id, params) = self.initialize_start().await?;
+        self.initialize_finish(id, server_capabilities).await?;
+        Ok(params)
+    }
+}
+
 pin_project! {
     /// A combined stdin/stdout stream for LSP server communication.
     ///
