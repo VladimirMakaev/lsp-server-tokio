@@ -133,6 +133,40 @@ pub fn method_not_found_response(request: &Request) -> Response {
     Response::err(request.id.clone(), error)
 }
 
+/// Creates a RequestCancelled error response for a cancelled request.
+///
+/// This helper creates a properly formatted JSON-RPC 2.0 error response
+/// with error code `-32800` (RequestCancelled) and a standard message.
+/// Use this when a request has been cancelled via $/cancelRequest.
+///
+/// # Arguments
+///
+/// * `id` - The request ID of the cancelled request
+///
+/// # Returns
+///
+/// A [`Response`] with an error containing the RequestCancelled code.
+///
+/// # Example
+///
+/// ```
+/// use lsp_server_tokio::{cancelled_response, RequestId, ErrorCode};
+///
+/// let id: RequestId = 42.into();
+/// let response = cancelled_response(id);
+///
+/// assert!(response.error.is_some());
+/// let error = response.error.unwrap();
+/// assert_eq!(error.code, ErrorCode::RequestCancelled as i32);
+/// ```
+pub fn cancelled_response(id: impl Into<crate::RequestId>) -> Response {
+    let error = ResponseError::new(
+        ErrorCode::RequestCancelled,
+        "Request was cancelled",
+    );
+    Response::err(id, error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +242,34 @@ mod tests {
         let incoming = IncomingMessage::Request(request);
         let cloned = incoming.clone();
         assert!(matches!(cloned, IncomingMessage::Request(_)));
+    }
+
+    // ============== cancelled_response Tests ==============
+
+    use super::cancelled_response;
+
+    #[test]
+    fn cancelled_response_creates_correct_error() {
+        let response = cancelled_response(42);
+
+        assert!(response.error.is_some());
+        assert!(response.result.is_none());
+        assert_eq!(response.id, Some(42.into()));
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, ErrorCode::RequestCancelled as i32);
+        assert_eq!(error.code, -32800);
+        assert!(error.message.contains("cancelled"));
+    }
+
+    #[test]
+    fn cancelled_response_with_string_id() {
+        let response = cancelled_response("req-xyz");
+
+        assert_eq!(
+            response.id,
+            Some(crate::RequestId::String("req-xyz".to_string()))
+        );
+        assert!(response.error.is_some());
     }
 }
