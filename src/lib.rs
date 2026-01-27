@@ -59,6 +59,7 @@ pub mod lifecycle;
 pub mod message;
 pub mod request_id;
 pub mod request_queue;
+pub mod routing;
 pub mod transport;
 
 pub use codec::LspCodec;
@@ -68,4 +69,5 @@ pub use lifecycle::{ExitCode, LifecycleState, ProtocolError};
 pub use message::{Message, Notification, Request, Response};
 pub use request_id::RequestId;
 pub use request_queue::{IncomingRequests, OutgoingRequests, RequestQueue};
+pub use routing::{method_not_found_response, IncomingMessage};
 pub use transport::{duplex_transport, transport, Transport};
