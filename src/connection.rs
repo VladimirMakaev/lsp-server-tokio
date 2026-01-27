@@ -537,6 +537,99 @@ where
         self.initialize_finish(id, server_capabilities).await?;
         Ok(params)
     }
+
+    /// Handles a shutdown request.
+    ///
+    /// Transitions to ShuttingDown state, cancels the shutdown token,
+    /// and sends a null response. After this, only exit notification
+    /// should be received.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The request ID of the shutdown request
+    ///
+    /// # Errors
+    ///
+    /// - [`ProtocolError::Io`] if sending the response fails
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use lsp_server_tokio::{Connection, Message};
+    /// use futures::StreamExt;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
+    ///
+    /// // ... after initialization ...
+    /// // When shutdown request is received:
+    /// // if let Message::Request(req) = msg && req.method == "shutdown" {
+    /// //     conn.handle_shutdown(req.id).await.unwrap();
+    /// //     assert!(conn.is_shutting_down());
+    /// // }
+    /// # });
+    /// ```
+    pub async fn handle_shutdown(&mut self, id: crate::RequestId) -> Result<(), ProtocolError> {
+        use futures::SinkExt;
+
+        // Cancel shutdown token first to notify waiting tasks
+        self.shutdown_token.cancel();
+
+        // Transition state
+        self.lifecycle_state = LifecycleState::ShuttingDown;
+
+        // Send null response
+        let response = Message::Response(crate::Response::ok(id, serde_json::Value::Null));
+        if let Err(e) = self.sender.send(response).await {
+            return Err(ProtocolError::Io(e));
+        }
+
+        Ok(())
+    }
+
+    /// Handles the exit notification.
+    ///
+    /// Returns [`ExitCode::Success`] (exit code 0) if shutdown was received first,
+    /// or [`ExitCode::Error`] (exit code 1) if exit came without shutdown.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::{Connection, ExitCode, LifecycleState};
+    ///
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
+    ///
+    /// // Exit without shutdown - dirty exit
+    /// let code = conn.handle_exit();
+    /// assert_eq!(code, ExitCode::Error);
+    /// ```
+    pub fn handle_exit(&mut self) -> ExitCode {
+        let was_shutting_down = self.lifecycle_state == LifecycleState::ShuttingDown;
+        self.lifecycle_state = LifecycleState::Exited;
+
+        if was_shutting_down {
+            ExitCode::Success
+        } else {
+            ExitCode::Error
+        }
+    }
+
+    /// Returns true if the connection is in Running state.
+    ///
+    /// The connection is in Running state after successful initialization
+    /// and before shutdown is requested.
+    pub fn is_running(&self) -> bool {
+        self.lifecycle_state == LifecycleState::Running
+    }
+
+    /// Returns true if shutdown has been requested.
+    ///
+    /// After shutdown, the server should only expect the exit notification.
+    pub fn is_shutting_down(&self) -> bool {
+        self.lifecycle_state == LifecycleState::ShuttingDown
+    }
 }
 
 pin_project! {
