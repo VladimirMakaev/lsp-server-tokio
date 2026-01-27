@@ -1280,4 +1280,184 @@ mod tests {
 
         assert_eq!(result, "shutdown received");
     }
+
+    // =========================================================================
+    // Routing Tests
+    // =========================================================================
+
+    use crate::IncomingMessage;
+
+    #[test]
+    fn route_request_returns_incoming_request() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        let request = Request::new(42, "textDocument/hover", Some(json!({"line": 10})));
+        let message = Message::Request(request);
+
+        let result = conn.route(message);
+        match result {
+            IncomingMessage::Request(req) => {
+                assert_eq!(req.id, 42.into());
+                assert_eq!(req.method, "textDocument/hover");
+            }
+            _ => panic!("Expected IncomingMessage::Request"),
+        }
+    }
+
+    #[test]
+    fn route_notification_returns_incoming_notification() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        let notification = Notification::new("textDocument/didOpen", Some(json!({"uri": "file:///test.rs"})));
+        let message = Message::Notification(notification);
+
+        let result = conn.route(message);
+        match result {
+            IncomingMessage::Notification(notif) => {
+                assert_eq!(notif.method, "textDocument/didOpen");
+            }
+            _ => panic!("Expected IncomingMessage::Notification"),
+        }
+    }
+
+    #[tokio::test]
+    async fn route_response_to_pending_outgoing_request() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        // Register an outgoing request
+        let rx = conn.request_queue.outgoing.register(42.into());
+
+        // Create a matching response
+        let response = Response::ok(42, json!({"result": "success"}));
+        let message = Message::Response(response);
+
+        // Route it
+        let result = conn.route(message);
+        assert!(
+            matches!(result, IncomingMessage::ResponseRouted),
+            "Expected ResponseRouted, got {:?}",
+            result
+        );
+
+        // Verify receiver got the response
+        let received = rx.await.expect("Should receive response");
+        assert_eq!(received.id, Some(42.into()));
+        assert!(received.result.is_some());
+        assert_eq!(received.result.unwrap()["result"], "success");
+    }
+
+    #[test]
+    fn route_response_for_unknown_id_returns_response_unknown() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        // Create a response for an ID that was never registered
+        let response = Response::ok(999, json!({"unexpected": true}));
+        let message = Message::Response(response);
+
+        let result = conn.route(message);
+        match result {
+            IncomingMessage::ResponseUnknown(resp) => {
+                assert_eq!(resp.id, Some(999.into()));
+            }
+            _ => panic!("Expected IncomingMessage::ResponseUnknown"),
+        }
+    }
+
+    #[test]
+    fn route_response_with_null_id_returns_response_unknown() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        // Create a parse error response (null id)
+        let response = Response::parse_error(crate::ResponseError::new(
+            crate::ErrorCode::ParseError,
+            "Parse error",
+        ));
+        let message = Message::Response(response);
+
+        let result = conn.route(message);
+        match result {
+            IncomingMessage::ResponseUnknown(resp) => {
+                assert!(resp.id.is_none(), "Expected null id for parse error response");
+                assert!(resp.error.is_some());
+            }
+            _ => panic!("Expected IncomingMessage::ResponseUnknown"),
+        }
+    }
+
+    #[tokio::test]
+    async fn route_response_with_string_id() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        // Register with string ID
+        let rx = conn.request_queue.outgoing.register("request-abc".into());
+
+        // Create matching response
+        let response = Response::ok("request-abc", json!(null));
+        let message = Message::Response(response);
+
+        let result = conn.route(message);
+        assert!(matches!(result, IncomingMessage::ResponseRouted));
+
+        let received = rx.await.expect("Should receive response");
+        assert_eq!(
+            received.id,
+            Some(crate::RequestId::String("request-abc".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn route_multiple_responses_to_different_requests() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        // Register multiple outgoing requests
+        let rx1 = conn.request_queue.outgoing.register(1.into());
+        let rx2 = conn.request_queue.outgoing.register(2.into());
+        let rx3 = conn.request_queue.outgoing.register(3.into());
+
+        // Route responses out of order
+        let result2 = conn.route(Message::Response(Response::ok(2, json!("second"))));
+        assert!(matches!(result2, IncomingMessage::ResponseRouted));
+
+        let result1 = conn.route(Message::Response(Response::ok(1, json!("first"))));
+        assert!(matches!(result1, IncomingMessage::ResponseRouted));
+
+        let result3 = conn.route(Message::Response(Response::ok(3, json!("third"))));
+        assert!(matches!(result3, IncomingMessage::ResponseRouted));
+
+        // Verify all receivers got correct responses
+        let resp1 = rx1.await.unwrap();
+        assert_eq!(resp1.result.unwrap(), json!("first"));
+
+        let resp2 = rx2.await.unwrap();
+        assert_eq!(resp2.result.unwrap(), json!("second"));
+
+        let resp3 = rx3.await.unwrap();
+        assert_eq!(resp3.result.unwrap(), json!("third"));
+    }
+
+    #[test]
+    fn route_error_response_to_pending_request() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        // Register an outgoing request (we won't await it in this sync test)
+        let _rx = conn.request_queue.outgoing.register(42.into());
+
+        // Route an error response
+        let response = Response::err(
+            42,
+            crate::ResponseError::new(crate::ErrorCode::MethodNotFound, "Not found"),
+        );
+        let message = Message::Response(response);
+
+        let result = conn.route(message);
+        assert!(matches!(result, IncomingMessage::ResponseRouted));
+    }
 }
