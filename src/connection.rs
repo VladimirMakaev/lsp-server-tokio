@@ -50,8 +50,10 @@
 //! // Create connection with typed request queue
 //! let mut conn: Connection<_, String, String> = Connection::new(stream);
 //!
-//! // Track an incoming request
-//! conn.request_queue.incoming.register(1.into(), "textDocument/hover".to_string());
+//! // Track an incoming request with a cancellation token
+//! use tokio_util::sync::CancellationToken;
+//! let token = CancellationToken::new();
+//! conn.request_queue.incoming.register(1.into(), "textDocument/hover".to_string(), token);
 //! assert!(conn.request_queue.incoming.is_pending(&1.into()));
 //! # });
 //! ```
@@ -270,8 +272,10 @@ where
     /// let (stream, _) = tokio::io::duplex(4096);
     ///
     /// // Create a queue with some pre-registered requests
+    /// use tokio_util::sync::CancellationToken;
     /// let mut queue: RequestQueue<u32, u32> = RequestQueue::new();
-    /// queue.incoming.register(1.into(), 100);
+    /// let token = CancellationToken::new();
+    /// queue.incoming.register(1.into(), 100, token);
     ///
     /// let conn = Connection::with_request_queue(stream, queue);
     /// assert!(conn.request_queue.incoming.is_pending(&1.into()));
@@ -974,9 +978,10 @@ mod tests {
         let mut conn: Connection<_, String, String> = Connection::new(stream);
 
         // Use request queue to track an incoming request
+        let token = CancellationToken::new();
         conn.request_queue
             .incoming
-            .register(1.into(), "handler_data".to_string());
+            .register(1.into(), "handler_data".to_string(), token);
         assert!(conn.request_queue.incoming.is_pending(&1.into()));
 
         // Complete it
@@ -988,7 +993,8 @@ mod tests {
     async fn connection_with_request_queue_test() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut queue: RequestQueue<u32, u32> = RequestQueue::new();
-        queue.incoming.register(42.into(), 100);
+        let token = CancellationToken::new();
+        queue.incoming.register(42.into(), 100, token);
 
         let conn = Connection::with_request_queue(stream, queue);
         assert!(conn.request_queue.incoming.is_pending(&42.into()));

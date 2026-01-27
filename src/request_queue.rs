@@ -275,13 +275,15 @@ impl<O> Default for OutgoingRequests<O> {
 ///
 /// ```
 /// use lsp_server_tokio::{RequestQueue, RequestId};
+/// use tokio_util::sync::CancellationToken;
 ///
 /// // Create a queue for a server that tracks method names for incoming
 /// // requests and expects JSON responses for outgoing requests
 /// let mut queue: RequestQueue<String, serde_json::Value> = RequestQueue::new();
 ///
-/// // Track incoming request
-/// queue.incoming.register(1.into(), "textDocument/hover".to_string());
+/// // Track incoming request with cancellation token
+/// let token = CancellationToken::new();
+/// queue.incoming.register(1.into(), "textDocument/hover".to_string(), token);
 ///
 /// // Operations on incoming don't affect outgoing
 /// assert_eq!(queue.incoming.pending_count(), 1);
@@ -314,14 +316,16 @@ impl<I, O> Default for RequestQueue<I, O> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_util::sync::CancellationToken;
 
     // ============== IncomingRequests Tests ==============
 
     #[test]
     fn incoming_register_and_complete() {
         let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+        let token = CancellationToken::new();
 
-        incoming.register(1.into(), "metadata".to_string());
+        incoming.register(1.into(), "metadata".to_string(), token);
         let data = incoming.complete(&1.into());
 
         assert_eq!(data, Some("metadata".to_string()));
@@ -342,7 +346,8 @@ mod tests {
 
         assert!(!incoming.is_pending(&1.into()));
 
-        incoming.register(1.into(), ());
+        let token = CancellationToken::new();
+        incoming.register(1.into(), (), token);
         assert!(incoming.is_pending(&1.into()));
 
         incoming.complete(&1.into());
@@ -355,10 +360,12 @@ mod tests {
 
         assert_eq!(incoming.pending_count(), 0);
 
-        incoming.register(1.into(), 100);
+        let token1 = CancellationToken::new();
+        incoming.register(1.into(), 100, token1);
         assert_eq!(incoming.pending_count(), 1);
 
-        incoming.register(2.into(), 200);
+        let token2 = CancellationToken::new();
+        incoming.register(2.into(), 200, token2);
         assert_eq!(incoming.pending_count(), 2);
 
         incoming.complete(&1.into());
@@ -465,7 +472,8 @@ mod tests {
         let mut queue: RequestQueue<String, String> = RequestQueue::new();
 
         // Register on incoming
-        queue.incoming.register(1.into(), "incoming".to_string());
+        let token = CancellationToken::new();
+        queue.incoming.register(1.into(), "incoming".to_string(), token);
         assert_eq!(queue.incoming.pending_count(), 1);
         assert_eq!(queue.outgoing.pending_count(), 0);
 
@@ -492,7 +500,8 @@ mod tests {
         let mut queue: RequestQueue<i32, i32> = RequestQueue::new();
 
         let str_id: RequestId = "abc-123".into();
-        queue.incoming.register(str_id.clone(), 42);
+        let token = CancellationToken::new();
+        queue.incoming.register(str_id.clone(), 42, token);
 
         assert!(queue.incoming.is_pending(&str_id));
         assert_eq!(queue.incoming.complete(&str_id), Some(42));
