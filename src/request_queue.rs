@@ -11,13 +11,15 @@
 //!
 //! ```
 //! use lsp_server_tokio::{RequestQueue, RequestId};
+//! use tokio_util::sync::CancellationToken;
 //!
 //! // Create a queue with custom metadata types
 //! let mut queue: RequestQueue<String, String> = RequestQueue::new();
 //!
-//! // Track an incoming request (from client)
+//! // Track an incoming request (from client) with a cancellation token
 //! let request_id: RequestId = 1.into();
-//! queue.incoming.register(request_id.clone(), "handler_context".to_string());
+//! let token = CancellationToken::new();
+//! queue.incoming.register(request_id.clone(), "handler_context".to_string(), token);
 //! assert!(queue.incoming.is_pending(&request_id));
 //!
 //! // When ready to respond, complete the request
@@ -49,6 +51,7 @@
 
 use std::collections::HashMap;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use crate::request_id::RequestId;
 
@@ -58,6 +61,9 @@ use crate::request_id::RequestId;
 /// any metadata needed to process the response. When the server is ready to
 /// send a response, it completes the request to retrieve the metadata.
 ///
+/// Each request is also associated with a [`CancellationToken`] that can be
+/// used to signal cancellation (e.g., when receiving `$/cancelRequest`).
+///
 /// The generic parameter `I` represents user-defined metadata associated with
 /// each incoming request (e.g., handler context, timing info, request origin).
 ///
@@ -65,15 +71,21 @@ use crate::request_id::RequestId;
 ///
 /// ```
 /// use lsp_server_tokio::{IncomingRequests, RequestId};
+/// use tokio_util::sync::CancellationToken;
 ///
 /// let mut incoming: IncomingRequests<String> = IncomingRequests::new();
 ///
-/// // Register a request with metadata
-/// incoming.register(1.into(), "textDocument/hover".to_string());
-/// incoming.register(2.into(), "textDocument/completion".to_string());
+/// // Register a request with metadata and cancellation token
+/// let token1 = CancellationToken::new();
+/// let token2 = CancellationToken::new();
+/// incoming.register(1.into(), "textDocument/hover".to_string(), token1);
+/// incoming.register(2.into(), "textDocument/completion".to_string(), token2);
 ///
 /// assert_eq!(incoming.pending_count(), 2);
 /// assert!(incoming.is_pending(&1.into()));
+///
+/// // Cancel a request
+/// incoming.cancel(&2.into());
 ///
 /// // Complete request and get metadata back
 /// let method = incoming.complete(&1.into());
@@ -82,7 +94,7 @@ use crate::request_id::RequestId;
 /// ```
 #[derive(Debug)]
 pub struct IncomingRequests<I> {
-    pending: HashMap<RequestId, I>,
+    pending: HashMap<RequestId, (I, CancellationToken)>,
 }
 
 impl<I> IncomingRequests<I> {
@@ -93,24 +105,48 @@ impl<I> IncomingRequests<I> {
         }
     }
 
-    /// Registers an incoming request with associated metadata.
+    /// Registers an incoming request with associated metadata and cancellation token.
     ///
     /// The metadata can be any user-defined type that you want to associate
-    /// with this request until it's completed.
-    pub fn register(&mut self, id: RequestId, data: I) {
-        self.pending.insert(id, data);
+    /// with this request until it's completed. The cancellation token can be
+    /// used to signal request cancellation to async handlers.
+    pub fn register(&mut self, id: RequestId, data: I, token: CancellationToken) {
+        self.pending.insert(id, (data, token));
     }
 
     /// Completes an incoming request, removing it from tracking and returning the metadata.
     ///
     /// Returns `Some(metadata)` if the request was pending, `None` otherwise.
+    /// The cancellation token is dropped when the request is completed.
     pub fn complete(&mut self, id: &RequestId) -> Option<I> {
-        self.pending.remove(id)
+        self.pending.remove(id).map(|(data, _)| data)
     }
 
     /// Returns `true` if the request is currently pending.
     pub fn is_pending(&self, id: &RequestId) -> bool {
         self.pending.contains_key(id)
+    }
+
+    /// Cancels a pending request by triggering its cancellation token.
+    ///
+    /// Returns `true` if the request was found and cancelled, `false` if the
+    /// request ID was not pending. Note that cancelling an already-cancelled
+    /// token is a no-op.
+    pub fn cancel(&self, id: &RequestId) -> bool {
+        if let Some((_, token)) = self.pending.get(id) {
+            token.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns a clone of the cancellation token for a pending request.
+    ///
+    /// Returns `None` if the request is not pending. The returned token
+    /// can be passed to async handlers for cooperative cancellation.
+    pub fn get_token(&self, id: &RequestId) -> Option<CancellationToken> {
+        self.pending.get(id).map(|(_, token)| token.clone())
     }
 
     /// Returns the number of currently pending requests.
