@@ -55,6 +55,54 @@ use tokio_util::sync::CancellationToken;
 
 use crate::request_id::RequestId;
 
+/// The method name for cancel request notifications per LSP specification.
+pub const CANCEL_REQUEST_METHOD: &str = "$/cancelRequest";
+
+/// Parses the request ID from $/cancelRequest notification params.
+///
+/// According to the LSP specification, $/cancelRequest has params:
+/// ```json
+/// { "id": number | string }
+/// ```
+///
+/// Returns `None` if params are missing, malformed, or the ID is not
+/// a valid integer or string.
+///
+/// # Example
+///
+/// ```
+/// use lsp_server_tokio::parse_cancel_params;
+/// use serde_json::json;
+///
+/// // Integer ID
+/// let params = Some(json!({"id": 42}));
+/// let id = parse_cancel_params(&params);
+/// assert_eq!(id, Some(42.into()));
+///
+/// // String ID
+/// let params = Some(json!({"id": "request-abc"}));
+/// let id = parse_cancel_params(&params);
+/// assert_eq!(id, Some("request-abc".into()));
+///
+/// // Missing params
+/// let id = parse_cancel_params(&None);
+/// assert!(id.is_none());
+/// ```
+pub fn parse_cancel_params(params: &Option<serde_json::Value>) -> Option<RequestId> {
+    let params = params.as_ref()?;
+    let id_value = params.get("id")?;
+
+    match id_value {
+        serde_json::Value::Number(n) => {
+            n.as_i64().map(|i| RequestId::Integer(i as i32))
+        }
+        serde_json::Value::String(s) => {
+            Some(RequestId::String(s.clone()))
+        }
+        _ => None
+    }
+}
+
 /// Tracks requests received from clients (incoming to the server).
 ///
 /// When the server receives a request, it registers the request ID along with
@@ -577,5 +625,50 @@ mod tests {
 
         assert!(queue.incoming.is_pending(&str_id));
         assert_eq!(queue.incoming.complete(&str_id), Some(42));
+    }
+
+    // ============== parse_cancel_params Tests ==============
+
+    use super::parse_cancel_params;
+
+    #[test]
+    fn parse_cancel_params_integer_id() {
+        let params = Some(serde_json::json!({"id": 42}));
+        let id = parse_cancel_params(&params);
+        assert_eq!(id, Some(RequestId::Integer(42)));
+    }
+
+    #[test]
+    fn parse_cancel_params_string_id() {
+        let params = Some(serde_json::json!({"id": "request-123"}));
+        let id = parse_cancel_params(&params);
+        assert_eq!(id, Some(RequestId::String("request-123".to_string())));
+    }
+
+    #[test]
+    fn parse_cancel_params_missing_params() {
+        let id = parse_cancel_params(&None);
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn parse_cancel_params_missing_id_field() {
+        let params = Some(serde_json::json!({"other": "field"}));
+        let id = parse_cancel_params(&params);
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn parse_cancel_params_invalid_id_type() {
+        let params = Some(serde_json::json!({"id": true}));
+        let id = parse_cancel_params(&params);
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn parse_cancel_params_null_id() {
+        let params = Some(serde_json::json!({"id": null}));
+        let id = parse_cancel_params(&params);
+        assert!(id.is_none());
     }
 }
