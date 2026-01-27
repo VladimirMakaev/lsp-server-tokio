@@ -335,6 +335,78 @@ where
     }
 }
 
+// Message routing methods
+impl<T, I> Connection<T, I, crate::Response>
+where
+    T: AsyncRead + AsyncWrite,
+{
+    /// Routes an incoming message, delivering responses to pending outgoing requests.
+    ///
+    /// Call this method for each message received from the transport to classify it
+    /// and automatically deliver responses to their corresponding outgoing request receivers.
+    ///
+    /// # Returns
+    ///
+    /// - [`IncomingMessage::Request`](crate::IncomingMessage::Request) - Handle the request and send a response
+    /// - [`IncomingMessage::Notification`](crate::IncomingMessage::Notification) - Handle the notification
+    /// - [`IncomingMessage::ResponseRouted`](crate::IncomingMessage::ResponseRouted) - Response was delivered to awaiting receiver
+    /// - [`IncomingMessage::ResponseUnknown`](crate::IncomingMessage::ResponseUnknown) - No pending request for this response ID
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use lsp_server_tokio::{Connection, Message, IncomingMessage, Response};
+    /// use futures::StreamExt;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), Response> = Connection::new(stream);
+    ///
+    /// while let Some(Ok(msg)) = conn.receiver.next().await {
+    ///     match conn.route(msg) {
+    ///         IncomingMessage::Request(req) => {
+    ///             // Handle request, send response
+    ///             println!("Request: {}", req.method);
+    ///         }
+    ///         IncomingMessage::Notification(notif) => {
+    ///             // Handle notification
+    ///             println!("Notification: {}", notif.method);
+    ///         }
+    ///         IncomingMessage::ResponseRouted => {
+    ///             // Response delivered to awaiting task
+    ///         }
+    ///         IncomingMessage::ResponseUnknown(resp) => {
+    ///             // Log unexpected response
+    ///             eprintln!("Unknown response: {:?}", resp.id);
+    ///         }
+    ///     }
+    /// }
+    /// # });
+    /// ```
+    pub fn route(&mut self, message: Message) -> crate::IncomingMessage {
+        match message {
+            Message::Request(req) => crate::IncomingMessage::Request(req),
+            Message::Notification(notif) => crate::IncomingMessage::Notification(notif),
+            Message::Response(resp) => {
+                if let Some(id) = resp.id.clone() {
+                    // Check if there's a pending request for this response
+                    if self.request_queue.outgoing.is_pending(&id) {
+                        // Complete the request - this sends the response to the awaiting receiver
+                        self.request_queue.outgoing.complete(&id, resp);
+                        crate::IncomingMessage::ResponseRouted
+                    } else {
+                        // No pending request for this ID
+                        crate::IncomingMessage::ResponseUnknown(resp)
+                    }
+                } else {
+                    // Response with null ID (parse error response)
+                    crate::IncomingMessage::ResponseUnknown(resp)
+                }
+            }
+        }
+    }
+}
+
 // Lifecycle management methods
 impl<T, I, O> Connection<T, I, O>
 where
