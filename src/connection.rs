@@ -953,4 +953,259 @@ mod tests {
         let _transport = StdioTransport::new();
         let _transport_default = StdioTransport::default();
     }
+
+    // =========================================================================
+    // Lifecycle Tests
+    // =========================================================================
+
+    use crate::{ExitCode, LifecycleState, Notification, ProtocolError};
+
+    #[tokio::test]
+    async fn test_initialize_handshake() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Client sends initialize request
+        let init_params = json!({"processId": 1234, "capabilities": {}});
+        let init_request = Message::Request(Request::new(1, "initialize", Some(init_params.clone())));
+        client.sender.send(init_request).await.unwrap();
+
+        // Server waits for initialize
+        let (id, params) = server.initialize_start().await.unwrap();
+        assert_eq!(id, 1.into());
+        assert_eq!(params["processId"], 1234);
+        assert_eq!(server.lifecycle_state(), LifecycleState::Initializing);
+
+        // Spawn task to handle server's initialize_finish
+        let server_task = tokio::spawn(async move {
+            let capabilities = json!({"textDocumentSync": 1});
+            server.initialize_finish(id, capabilities).await.unwrap();
+            server
+        });
+
+        // Client receives InitializeResult
+        let response = client.receiver.next().await.unwrap().unwrap();
+        assert!(response.is_response());
+        if let Message::Response(resp) = response {
+            assert_eq!(resp.id, Some(1.into()));
+            assert!(resp.result.is_some());
+            let result = resp.result.unwrap();
+            assert_eq!(result["capabilities"]["textDocumentSync"], 1);
+        }
+
+        // Client sends initialized notification
+        let initialized = Message::Notification(Notification::new("initialized", None));
+        client.sender.send(initialized).await.unwrap();
+
+        // Server's initialize_finish completes
+        let server = server_task.await.unwrap();
+        assert!(server.is_running());
+        assert_eq!(server.lifecycle_state(), LifecycleState::Running);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_rejects_non_init_requests() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Client sends a non-initialize request first
+        let hover_request = Message::Request(Request::new(1, "textDocument/hover", None));
+        client.sender.send(hover_request).await.unwrap();
+
+        // Spawn server's initialize_start
+        let server_task = tokio::spawn(async move {
+            server.initialize_start().await.unwrap();
+            server
+        });
+
+        // Client receives ServerNotInitialized error
+        let response = client.receiver.next().await.unwrap().unwrap();
+        assert!(response.is_response());
+        if let Message::Response(resp) = response {
+            assert_eq!(resp.id, Some(1.into()));
+            assert!(resp.error.is_some());
+            let error = resp.error.unwrap();
+            assert_eq!(error.code, crate::ErrorCode::ServerNotInitialized as i32);
+        }
+
+        // Now client sends initialize - should be accepted
+        let init_request = Message::Request(Request::new(2, "initialize", None));
+        client.sender.send(init_request).await.unwrap();
+
+        let server = server_task.await.unwrap();
+        assert_eq!(server.lifecycle_state(), LifecycleState::Initializing);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_drops_notifications() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Client sends random notification before init
+        let random_notif = Message::Notification(Notification::new("textDocument/didOpen", None));
+        client.sender.send(random_notif).await.unwrap();
+
+        // Client sends initialize request
+        let init_request = Message::Request(Request::new(1, "initialize", None));
+        client.sender.send(init_request).await.unwrap();
+
+        // Server's initialize_start should skip notification and find initialize
+        let (id, _params) = server.initialize_start().await.unwrap();
+        assert_eq!(id, 1.into());
+        assert_eq!(server.lifecycle_state(), LifecycleState::Initializing);
+    }
+
+    #[tokio::test]
+    async fn test_exit_during_init_disconnects() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Client sends exit notification instead of initialize
+        let exit_notif = Message::Notification(Notification::new("exit", None));
+        client.sender.send(exit_notif).await.unwrap();
+
+        // Server's initialize_start should return Disconnected
+        let result = server.initialize_start().await;
+        assert!(matches!(result, Err(ProtocolError::Disconnected)));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_then_exit() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Complete initialization
+        let init_request = Message::Request(Request::new(1, "initialize", None));
+        client.sender.send(init_request).await.unwrap();
+
+        let (id, _params) = server.initialize_start().await.unwrap();
+
+        let server_task = tokio::spawn(async move {
+            server.initialize_finish(id, json!({})).await.unwrap();
+            server
+        });
+
+        let _ = client.receiver.next().await; // Receive InitializeResult
+        let initialized = Message::Notification(Notification::new("initialized", None));
+        client.sender.send(initialized).await.unwrap();
+
+        let mut server = server_task.await.unwrap();
+        assert!(server.is_running());
+
+        // Client sends shutdown request
+        let shutdown_request = Message::Request(Request::new(2, "shutdown", None));
+        client.sender.send(shutdown_request).await.unwrap();
+
+        // Server receives and handles shutdown
+        let msg = server.receiver.next().await.unwrap().unwrap();
+        if let Message::Request(req) = msg {
+            assert_eq!(req.method, "shutdown");
+            server.handle_shutdown(req.id).await.unwrap();
+        } else {
+            panic!("Expected shutdown request");
+        }
+
+        // Verify shutdown state
+        assert!(server.is_shutting_down());
+        assert!(server.shutdown_token().is_cancelled());
+
+        // Client receives null response
+        let response = client.receiver.next().await.unwrap().unwrap();
+        if let Message::Response(resp) = response {
+            assert_eq!(resp.id, Some(2.into()));
+            assert_eq!(resp.result, Some(serde_json::Value::Null));
+        }
+
+        // Client sends exit
+        // Server handles exit
+        let exit_code = server.handle_exit();
+        assert_eq!(exit_code, ExitCode::Success);
+        assert_eq!(server.lifecycle_state(), LifecycleState::Exited);
+    }
+
+    #[tokio::test]
+    async fn test_exit_without_shutdown() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Complete initialization
+        let init_request = Message::Request(Request::new(1, "initialize", None));
+        client.sender.send(init_request).await.unwrap();
+
+        let (id, _params) = server.initialize_start().await.unwrap();
+
+        let server_task = tokio::spawn(async move {
+            server.initialize_finish(id, json!({})).await.unwrap();
+            server
+        });
+
+        let _ = client.receiver.next().await;
+        let initialized = Message::Notification(Notification::new("initialized", None));
+        client.sender.send(initialized).await.unwrap();
+
+        let mut server = server_task.await.unwrap();
+        assert!(server.is_running());
+
+        // Server receives exit without shutdown - dirty exit
+        let exit_code = server.handle_exit();
+        assert_eq!(exit_code, ExitCode::Error);
+        assert_eq!(server.lifecycle_state(), LifecycleState::Exited);
+    }
+
+    #[tokio::test]
+    async fn test_on_shutdown_future() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Complete initialization
+        let init_request = Message::Request(Request::new(1, "initialize", None));
+        client.sender.send(init_request).await.unwrap();
+
+        let (id, _params) = server.initialize_start().await.unwrap();
+
+        let server_task = tokio::spawn(async move {
+            server.initialize_finish(id, json!({})).await.unwrap();
+            server
+        });
+
+        let _ = client.receiver.next().await;
+        let initialized = Message::Notification(Notification::new("initialized", None));
+        client.sender.send(initialized).await.unwrap();
+
+        let mut server = server_task.await.unwrap();
+
+        // Spawn a task waiting on shutdown
+        let token = server.shutdown_token();
+        let wait_task = tokio::spawn(async move {
+            token.cancelled().await;
+            "shutdown received"
+        });
+
+        // Send shutdown
+        let shutdown_request = Message::Request(Request::new(2, "shutdown", None));
+        client.sender.send(shutdown_request).await.unwrap();
+
+        let msg = server.receiver.next().await.unwrap().unwrap();
+        if let Message::Request(req) = msg {
+            server.handle_shutdown(req.id).await.unwrap();
+        }
+
+        // The wait task should complete now
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            wait_task,
+        )
+        .await
+        .expect("wait task should complete quickly")
+        .unwrap();
+
+        assert_eq!(result, "shutdown received");
+    }
 }
