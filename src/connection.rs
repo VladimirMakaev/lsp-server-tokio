@@ -411,6 +411,108 @@ where
     }
 }
 
+// Cancel request handling methods
+impl<T, I, O> Connection<T, I, O>
+where
+    T: AsyncRead + AsyncWrite,
+{
+    /// Registers an incoming request with automatic cancellation token creation.
+    ///
+    /// This is a convenience method that creates a child token from the connection's
+    /// shutdown token and registers the request. The returned token:
+    /// - Is cancelled when $/cancelRequest is received for this ID
+    /// - Is cancelled when the server shuts down (inherits from shutdown_token)
+    ///
+    /// Pass this token to your request handler for cooperative cancellation.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The request ID
+    /// * `data` - User-defined metadata for this request
+    ///
+    /// # Returns
+    ///
+    /// A [`CancellationToken`] that will be triggered on cancel or shutdown.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::Connection;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, String, ()> = Connection::new(stream);
+    ///
+    /// // Register a cancellable request
+    /// let token = conn.register_cancellable_request(1.into(), "hover".to_string());
+    ///
+    /// // Pass token to handler
+    /// tokio::spawn(async move {
+    ///     tokio::select! {
+    ///         _ = token.cancelled() => {
+    ///             println!("Request cancelled!");
+    ///         }
+    ///         // ... do work ...
+    ///     }
+    /// });
+    /// # });
+    /// ```
+    pub fn register_cancellable_request(&mut self, id: crate::RequestId, data: I) -> CancellationToken {
+        let token = self.shutdown_token.child_token();
+        self.request_queue.incoming.register(id, data, token.clone());
+        token
+    }
+
+    /// Handles a $/cancelRequest notification.
+    ///
+    /// If the notification is a $/cancelRequest, parses the request ID from params
+    /// and cancels the corresponding request's token. If the request is not pending
+    /// (already completed or never registered), this is a no-op.
+    ///
+    /// # Arguments
+    ///
+    /// * `notification` - The notification to check
+    ///
+    /// # Returns
+    ///
+    /// - `Some(true)` if this was $/cancelRequest and the request was found and cancelled
+    /// - `Some(false)` if this was $/cancelRequest but the request was not pending
+    /// - `None` if this was not a $/cancelRequest notification
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::{Connection, Notification, IncomingMessage};
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, String, ()> = Connection::new(stream);
+    ///
+    /// // Register a request
+    /// let _token = conn.register_cancellable_request(42.into(), "test".to_string());
+    ///
+    /// // Simulate receiving $/cancelRequest
+    /// let cancel_notif = Notification::new(
+    ///     "$/cancelRequest",
+    ///     Some(serde_json::json!({"id": 42})),
+    /// );
+    ///
+    /// let result = conn.handle_cancel_request(&cancel_notif);
+    /// assert_eq!(result, Some(true));
+    /// # });
+    /// ```
+    pub fn handle_cancel_request(&mut self, notification: &crate::Notification) -> Option<bool> {
+        use crate::request_queue::{CANCEL_REQUEST_METHOD, parse_cancel_params};
+
+        if notification.method != CANCEL_REQUEST_METHOD {
+            return None;
+        }
+
+        let id = parse_cancel_params(&notification.params)?;
+        Some(self.request_queue.incoming.cancel(&id))
+    }
+}
+
 // Lifecycle management methods
 impl<T, I, O> Connection<T, I, O>
 where
@@ -1465,5 +1567,133 @@ mod tests {
 
         let result = conn.route(message);
         assert!(matches!(result, IncomingMessage::ResponseRouted));
+    }
+
+    // =========================================================================
+    // Cancellation Tests
+    // =========================================================================
+
+    #[test]
+    fn register_cancellable_request_creates_child_token() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+
+        let token = conn.register_cancellable_request(1.into(), "test".to_string());
+
+        // Request should be pending
+        assert!(conn.request_queue.incoming.is_pending(&1.into()));
+
+        // Token should not be cancelled yet
+        assert!(!token.is_cancelled());
+
+        // Cancelling shutdown should cancel the child token
+        conn.shutdown_token.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn register_cancellable_request_stores_metadata() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+
+        conn.register_cancellable_request(1.into(), "hover_context".to_string());
+
+        let data = conn.request_queue.incoming.complete(&1.into());
+        assert_eq!(data, Some("hover_context".to_string()));
+    }
+
+    #[test]
+    fn handle_cancel_request_cancels_pending() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+
+        // Register a cancellable request
+        let token = conn.register_cancellable_request(42.into(), "test".to_string());
+        assert!(!token.is_cancelled());
+
+        // Create cancel notification
+        let cancel_notif = Notification::new(
+            "$/cancelRequest",
+            Some(json!({"id": 42})),
+        );
+
+        // Handle it
+        let result = conn.handle_cancel_request(&cancel_notif);
+        assert_eq!(result, Some(true));
+
+        // Token should be cancelled
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn handle_cancel_request_unknown_id_returns_false() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+
+        let cancel_notif = Notification::new(
+            "$/cancelRequest",
+            Some(json!({"id": 999})),
+        );
+
+        let result = conn.handle_cancel_request(&cancel_notif);
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn handle_cancel_request_wrong_method_returns_none() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+
+        let other_notif = Notification::new(
+            "textDocument/didOpen",
+            Some(json!({"uri": "file:///test.rs"})),
+        );
+
+        let result = conn.handle_cancel_request(&other_notif);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn handle_cancel_request_malformed_params_returns_none() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+
+        // Missing id field
+        let cancel_notif = Notification::new(
+            "$/cancelRequest",
+            Some(json!({"other": "field"})),
+        );
+
+        let result = conn.handle_cancel_request(&cancel_notif);
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn cancellation_propagates_to_spawned_handler() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+
+        // Register a cancellable request
+        let token = conn.register_cancellable_request(1.into(), "test".to_string());
+
+        // Spawn a handler that waits for cancellation
+        let handle = tokio::spawn(async move {
+            token.cancelled().await;
+            "cancelled"
+        });
+
+        // Cancel the request
+        conn.request_queue.incoming.cancel(&1.into());
+
+        // Handler should complete quickly
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            handle,
+        )
+        .await
+        .expect("Handler should complete quickly")
+        .unwrap();
+
+        assert_eq!(result, "cancelled");
     }
 }
