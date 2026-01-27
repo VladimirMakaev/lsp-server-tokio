@@ -5,6 +5,7 @@
 //!
 //! - Split sender/receiver halves for async message passing
 //! - Request queue for tracking pending requests in both directions
+//! - Lifecycle state management for LSP initialization and shutdown
 //!
 //! # Overview
 //!
@@ -75,7 +76,9 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::StreamExt;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, Stdin, Stdout};
+use tokio_util::sync::CancellationToken;
 
+use crate::lifecycle::{ExitCode, LifecycleState, ProtocolError};
 use crate::{transport, Message, RequestQueue, Transport};
 
 /// The sender half of an LSP connection.
@@ -182,6 +185,12 @@ where
     /// - `request_queue.incoming`: Track requests you've received and need to respond to
     /// - `request_queue.outgoing`: Track requests you've sent and are awaiting responses for
     pub request_queue: RequestQueue<I, O>,
+
+    /// The current lifecycle state of the connection.
+    lifecycle_state: LifecycleState,
+
+    /// Cancellation token that is triggered when shutdown is requested.
+    shutdown_token: CancellationToken,
 }
 
 impl<T, I, O> Connection<T, I, O>
@@ -235,6 +244,8 @@ where
             sender,
             receiver,
             request_queue: RequestQueue::new(),
+            lifecycle_state: LifecycleState::default(),
+            shutdown_token: CancellationToken::new(),
         }
     }
 
@@ -272,7 +283,55 @@ where
             sender,
             receiver,
             request_queue,
+            lifecycle_state: LifecycleState::default(),
+            shutdown_token: CancellationToken::new(),
         }
+    }
+
+    /// Returns the current lifecycle state.
+    pub fn lifecycle_state(&self) -> LifecycleState {
+        self.lifecycle_state
+    }
+
+    /// Returns a token that is cancelled when shutdown is requested.
+    ///
+    /// Use this to gracefully stop background tasks when the server is
+    /// shutting down.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use lsp_server_tokio::Connection;
+    /// use tokio_util::sync::CancellationToken;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let conn: Connection<_, (), ()> = Connection::new(stream);
+    ///
+    /// let token = conn.shutdown_token();
+    /// tokio::spawn(async move {
+    ///     loop {
+    ///         tokio::select! {
+    ///             _ = token.cancelled() => {
+    ///                 // Clean up and exit
+    ///                 break;
+    ///             }
+    ///             // ... other work ...
+    ///         }
+    ///     }
+    /// });
+    /// # });
+    /// ```
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown_token.clone()
+    }
+
+    /// Returns a future that completes when shutdown is requested.
+    ///
+    /// This is equivalent to `self.shutdown_token().cancelled()` but more
+    /// convenient for simple use cases.
+    pub fn on_shutdown(&self) -> impl std::future::Future<Output = ()> + '_ {
+        self.shutdown_token.cancelled()
     }
 }
 
