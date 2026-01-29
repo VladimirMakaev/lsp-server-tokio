@@ -93,13 +93,9 @@ pub fn parse_cancel_params(params: &Option<serde_json::Value>) -> Option<Request
     let id_value = params.get("id")?;
 
     match id_value {
-        serde_json::Value::Number(n) => {
-            n.as_i64().map(|i| RequestId::Integer(i as i32))
-        }
-        serde_json::Value::String(s) => {
-            Some(RequestId::String(s.clone()))
-        }
-        _ => None
+        serde_json::Value::Number(n) => n.as_i64().map(|i| RequestId::Integer(i as i32)),
+        serde_json::Value::String(s) => Some(RequestId::String(s.clone())),
+        _ => None,
     }
 }
 
@@ -593,7 +589,9 @@ mod tests {
 
         // Register on incoming
         let token = CancellationToken::new();
-        queue.incoming.register(1.into(), "incoming".to_string(), token);
+        queue
+            .incoming
+            .register(1.into(), "incoming".to_string(), token);
         assert_eq!(queue.incoming.pending_count(), 1);
         assert_eq!(queue.outgoing.pending_count(), 0);
 
