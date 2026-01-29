@@ -3,7 +3,7 @@
 //! Provides a `TestClient` for spawning and communicating with the
 //! formatter_server example over stdio using the LSP protocol.
 
-use std::io::{self, BufRead, Write as IoWrite};
+use std::io;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -176,6 +176,7 @@ impl TestClient {
     }
 
     /// Kills the server process immediately.
+    #[allow(dead_code)]
     pub async fn kill(&mut self) -> io::Result<()> {
         self.child.kill().await
     }
