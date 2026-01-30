@@ -513,6 +513,69 @@ where
     }
 }
 
+// Outgoing request cancellation methods
+impl<T, I, O> Connection<T, I, O>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    /// Cancels an outgoing request by sending $/cancelRequest and removing it from the queue.
+    ///
+    /// This method is for cancelling requests that **this connection sent** (outgoing requests).
+    /// It is the inverse of [`handle_cancel_request`](Self::handle_cancel_request), which handles
+    /// cancellation requests **received from** the other end (for incoming requests).
+    ///
+    /// # Behavior
+    ///
+    /// 1. Sends a `$/cancelRequest` notification with the given request ID
+    /// 2. Removes the request from the outgoing queue (the awaiting receiver will get `RecvError`)
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(true)` if the request was pending and cancelled
+    /// - `Ok(false)` if the request was not found in the queue
+    /// - `Err` if sending the notification failed
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::{Connection, Response};
+    /// use futures::SinkExt;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (client_stream, server_stream) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), Response> = Connection::new(client_stream);
+    ///
+    /// // Register an outgoing request
+    /// let rx = conn.request_queue.outgoing.register(42.into());
+    ///
+    /// // Cancel it
+    /// let was_pending = conn.cancel(42).await.unwrap();
+    /// assert!(was_pending);
+    ///
+    /// // The receiver will get an error
+    /// assert!(rx.await.is_err());
+    /// # });
+    /// ```
+    pub async fn cancel(&mut self, id: impl Into<crate::RequestId>) -> Result<bool, std::io::Error> {
+        use crate::request_queue::CANCEL_REQUEST_METHOD;
+        use futures::SinkExt;
+
+        let id = id.into();
+
+        // Build the $/cancelRequest notification
+        let notification = crate::Notification::new(
+            CANCEL_REQUEST_METHOD,
+            Some(serde_json::json!({"id": id})),
+        );
+
+        // Send the notification
+        self.sender.send(Message::Notification(notification)).await?;
+
+        // Cancel in the queue (returns true if was pending)
+        Ok(self.request_queue.outgoing.cancel(&id))
+    }
+}
+
 // Lifecycle management methods
 impl<T, I, O> Connection<T, I, O>
 where
@@ -1695,5 +1758,71 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, "cancelled");
+    }
+
+    // =========================================================================
+    // Outgoing Cancel Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_cancel_outgoing_request() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Register an outgoing request on client
+        let rx = client.request_queue.outgoing.register(42.into());
+
+        // Cancel it - should send notification and remove from queue
+        let was_pending = client.cancel(42).await.unwrap();
+        assert!(was_pending);
+        assert!(!client.request_queue.outgoing.is_pending(&42.into()));
+
+        // Server should receive the $/cancelRequest notification
+        let msg = server.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_notification());
+        if let Message::Notification(notif) = msg {
+            assert_eq!(notif.method, "$/cancelRequest");
+            assert_eq!(notif.params.unwrap()["id"], 42);
+        } else {
+            panic!("Expected notification");
+        }
+
+        // The receiver should get an error (sender dropped)
+        assert!(rx.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_unknown_outgoing_request() {
+        let (client_stream, _server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+
+        // Cancel a request that was never registered
+        let was_pending = client.cancel(999).await.unwrap();
+        assert!(!was_pending);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_with_string_id() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Register with string ID
+        let rx = client.request_queue.outgoing.register("req-abc".into());
+
+        // Cancel it
+        let was_pending = client.cancel("req-abc").await.unwrap();
+        assert!(was_pending);
+
+        // Server should receive the notification with string ID
+        let msg = server.receiver.next().await.unwrap().unwrap();
+        if let Message::Notification(notif) = msg {
+            assert_eq!(notif.params.unwrap()["id"], "req-abc");
+        } else {
+            panic!("Expected notification");
+        }
+
+        assert!(rx.await.is_err());
     }
 }
