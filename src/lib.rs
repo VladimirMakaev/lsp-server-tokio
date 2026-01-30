@@ -51,6 +51,14 @@
 //! - [`transport()`] - Factory function wrapping any AsyncRead + AsyncWrite
 //! - [`duplex_transport()`] - Creates connected in-memory transports for testing
 //! - [`LspCodec`] - Encoder/Decoder for Content-Length message framing
+//!
+//! ## Request Routing
+//!
+//! The [`IncomingMessage`] enum classifies messages received from [`Connection::route()`]:
+//! - [`IncomingMessage::Request`] - A request with automatic [`CancellationToken`] for cooperative cancellation
+//! - [`IncomingMessage::Notification`] - A notification (no response expected)
+//! - [`IncomingMessage::ResponseRouted`] - A response delivered to an awaiting receiver
+//! - [`IncomingMessage::ResponseUnknown`] - A response for an unknown request ID
 
 pub mod codec;
 pub mod connection;
@@ -71,3 +79,6 @@ pub use request_id::RequestId;
 pub use request_queue::{IncomingRequests, OutgoingRequests, RequestQueue, parse_cancel_params, CANCEL_REQUEST_METHOD};
 pub use routing::{method_not_found_response, IncomingMessage, cancelled_response};
 pub use transport::{duplex_transport, transport, Transport};
+
+// Re-export CancellationToken for ergonomic use with IncomingMessage::Request
+pub use tokio_util::sync::CancellationToken;
