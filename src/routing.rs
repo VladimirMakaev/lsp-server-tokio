@@ -27,6 +27,8 @@
 //! // After calling route(), you get IncomingMessage::Notification(notif)
 //! ```
 
+use tokio_util::sync::CancellationToken;
+
 use crate::error::{ErrorCode, ResponseError};
 use crate::message::{Notification, Request, Response};
 
@@ -37,8 +39,8 @@ use crate::message::{Notification, Request, Response};
 ///
 /// # Variants
 ///
-/// - [`Request`](IncomingMessage::Request): A request requiring a response. The caller
-///   should handle the request and send back a [`Response`].
+/// - [`Request`](IncomingMessage::Request): A request requiring a response. Includes
+///   a [`CancellationToken`] that is triggered on `$/cancelRequest` or shutdown.
 /// - [`Notification`](IncomingMessage::Notification): A fire-and-forget notification.
 ///   No response is expected.
 /// - [`ResponseRouted`](IncomingMessage::ResponseRouted): A response that was successfully
@@ -53,8 +55,9 @@ use crate::message::{Notification, Request, Response};
 ///
 /// fn handle_message(incoming: IncomingMessage) {
 ///     match incoming {
-///         IncomingMessage::Request(req) => {
+///         IncomingMessage::Request(req, token) => {
 ///             println!("Handle request: {}", req.method);
+///             // Use token for cooperative cancellation
 ///             // Send response back
 ///         }
 ///         IncomingMessage::Notification(notif) => {
@@ -70,12 +73,17 @@ use crate::message::{Notification, Request, Response};
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum IncomingMessage {
     /// A request that needs a response.
     ///
     /// The server must send a response with the same request ID.
-    Request(Request),
+    /// The included [`CancellationToken`] is triggered when:
+    /// - A `$/cancelRequest` notification is received for this request
+    /// - The connection is shutting down
+    ///
+    /// Use the token for cooperative cancellation of long-running operations.
+    Request(Request, CancellationToken),
 
     /// A notification (fire-and-forget).
     ///
@@ -217,12 +225,15 @@ mod tests {
 
     #[test]
     fn incoming_message_variants_constructible() {
+        use tokio_util::sync::CancellationToken;
+
         // Test that all variants can be constructed
         let request = Request::new(1, "test", None);
         let notification = Notification::new("test", None);
         let response = Response::ok(1, json!(null));
+        let token = CancellationToken::new();
 
-        let _req = IncomingMessage::Request(request);
+        let _req = IncomingMessage::Request(request, token);
         let _notif = IncomingMessage::Notification(notification);
         let _routed = IncomingMessage::ResponseRouted;
         let _unknown = IncomingMessage::ResponseUnknown(response);
@@ -230,18 +241,13 @@ mod tests {
 
     #[test]
     fn incoming_message_is_debug() {
+        use tokio_util::sync::CancellationToken;
+
         let request = Request::new(1, "test", None);
-        let incoming = IncomingMessage::Request(request);
+        let token = CancellationToken::new();
+        let incoming = IncomingMessage::Request(request, token);
         let debug_str = format!("{:?}", incoming);
         assert!(debug_str.contains("Request"));
-    }
-
-    #[test]
-    fn incoming_message_is_clone() {
-        let request = Request::new(1, "test", None);
-        let incoming = IncomingMessage::Request(request);
-        let cloned = incoming.clone();
-        assert!(matches!(cloned, IncomingMessage::Request(_)));
     }
 
     // ============== cancelled_response Tests ==============
