@@ -101,16 +101,14 @@ async fn main() {
 
         // Route the message and handle it
         match conn.route(msg) {
-            IncomingMessage::Request(req) => {
+            IncomingMessage::Request(req, token) => {
                 // Handle shutdown specially
                 if req.method == "shutdown" {
                     conn.handle_shutdown(req.id).await.ok();
                     continue;
                 }
 
-                // Register cancellable request
-                let token = conn.register_cancellable_request(req.id.clone(), req.method.clone());
-
+                // Token is now automatically provided by route()
                 let response = handle_request(&mut conn, &mut state, &req, token).await;
                 if let Err(e) = conn.sender.send(Message::Response(response)).await {
                     eprintln!("Error sending response: {:?}", e);
