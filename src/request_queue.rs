@@ -88,12 +88,16 @@ pub const CANCEL_REQUEST_METHOD: &str = "$/cancelRequest";
 /// let id = parse_cancel_params(&None);
 /// assert!(id.is_none());
 /// ```
+#[must_use] 
 pub fn parse_cancel_params(params: &Option<serde_json::Value>) -> Option<RequestId> {
     let params = params.as_ref()?;
     let id_value = params.get("id")?;
 
     match id_value {
-        serde_json::Value::Number(n) => n.as_i64().map(|i| RequestId::Integer(i as i32)),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .and_then(|i| i32::try_from(i).ok())
+            .map(RequestId::Integer),
         serde_json::Value::String(s) => Some(RequestId::String(s.clone())),
         _ => None,
     }
@@ -143,6 +147,7 @@ pub struct IncomingRequests<I> {
 
 impl<I> IncomingRequests<I> {
     /// Creates a new empty incoming request tracker.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
@@ -167,6 +172,7 @@ impl<I> IncomingRequests<I> {
     }
 
     /// Returns `true` if the request is currently pending.
+    #[must_use] 
     pub fn is_pending(&self, id: &RequestId) -> bool {
         self.pending.contains_key(id)
     }
@@ -176,6 +182,7 @@ impl<I> IncomingRequests<I> {
     /// Returns `true` if the request was found and cancelled, `false` if the
     /// request ID was not pending. Note that cancelling an already-cancelled
     /// token is a no-op.
+    #[must_use] 
     pub fn cancel(&self, id: &RequestId) -> bool {
         if let Some((_, token)) = self.pending.get(id) {
             token.cancel();
@@ -189,11 +196,13 @@ impl<I> IncomingRequests<I> {
     ///
     /// Returns `None` if the request is not pending. The returned token
     /// can be passed to async handlers for cooperative cancellation.
+    #[must_use] 
     pub fn get_token(&self, id: &RequestId) -> Option<CancellationToken> {
         self.pending.get(id).map(|(_, token)| token.clone())
     }
 
     /// Returns the number of currently pending requests.
+    #[must_use] 
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
@@ -242,6 +251,7 @@ pub struct OutgoingRequests<O> {
 
 impl<O> OutgoingRequests<O> {
     /// Creates a new empty outgoing request tracker.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
@@ -286,11 +296,13 @@ impl<O> OutgoingRequests<O> {
     }
 
     /// Returns `true` if the request is currently pending.
+    #[must_use] 
     pub fn is_pending(&self, id: &RequestId) -> bool {
         self.pending.contains_key(id)
     }
 
     /// Returns the number of currently pending requests.
+    #[must_use] 
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
@@ -343,6 +355,7 @@ pub struct RequestQueue<I, O> {
 
 impl<I, O> RequestQueue<I, O> {
     /// Creates a new empty request queue.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             incoming: IncomingRequests::new(),
@@ -490,7 +503,7 @@ mod tests {
         incoming.register(1.into(), "cancelled_data".to_string(), token);
 
         // Cancel first
-        incoming.cancel(&1.into());
+        let _ = incoming.cancel(&1.into());
 
         // Complete should still return the data
         let data = incoming.complete(&1.into());

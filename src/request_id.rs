@@ -37,8 +37,8 @@ pub enum RequestId {
 impl fmt::Display for RequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RequestId::Integer(n) => write!(f, "{}", n),
-            RequestId::String(s) => write!(f, "{}", s),
+            RequestId::Integer(n) => write!(f, "{n}"),
+            RequestId::String(s) => write!(f, "{s}"),
         }
     }
 }

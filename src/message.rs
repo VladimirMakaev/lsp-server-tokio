@@ -200,6 +200,7 @@ impl Response {
     /// Creates a parse error response where the request id could not be determined.
     ///
     /// Per JSON-RPC 2.0 spec, the id MUST be null when the request id cannot be parsed.
+    #[must_use] 
     pub fn parse_error(error: ResponseError) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -298,16 +299,19 @@ pub enum Message {
 
 impl Message {
     /// Returns `true` if this is a Request message.
+    #[must_use] 
     pub fn is_request(&self) -> bool {
         matches!(self, Message::Request(_))
     }
 
     /// Returns `true` if this is a Response message.
+    #[must_use] 
     pub fn is_response(&self) -> bool {
         matches!(self, Message::Response(_))
     }
 
     /// Returns `true` if this is a Notification message.
+    #[must_use] 
     pub fn is_notification(&self) -> bool {
         matches!(self, Message::Notification(_))
     }

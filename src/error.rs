@@ -57,7 +57,7 @@ impl From<ErrorCode> for i32 {
 impl TryFrom<i32> for ErrorCode {
     type Error = i32;
 
-    /// Attempts to convert an i32 to an ErrorCode.
+    /// Attempts to convert an i32 to an `ErrorCode`.
     ///
     /// Returns `Err(code)` if the code is not a known error code.
     fn try_from(code: i32) -> Result<Self, Self::Error> {
@@ -109,7 +109,7 @@ pub struct ResponseError {
 }
 
 impl ResponseError {
-    /// Creates a new ResponseError with the given error code and message.
+    /// Creates a new `ResponseError` with the given error code and message.
     ///
     /// The `data` field is set to `None`.
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
@@ -120,7 +120,7 @@ impl ResponseError {
         }
     }
 
-    /// Creates a new ResponseError from a raw error code and message.
+    /// Creates a new `ResponseError` from a raw error code and message.
     ///
     /// Use this when dealing with unknown or custom error codes.
     pub fn new_raw(code: i32, message: impl Into<String>) -> Self {
@@ -133,13 +133,15 @@ impl ResponseError {
 
     /// Adds additional data to this error.
     ///
-    /// Consumes self and returns a new ResponseError with the data attached.
+    /// Consumes self and returns a new `ResponseError` with the data attached.
+    #[must_use] 
     pub fn with_data(mut self, data: Value) -> Self {
         self.data = Some(data);
         self
     }
 
-    /// Returns the error code as an ErrorCode enum, if it maps to a known code.
+    /// Returns the error code as an `ErrorCode` enum, if it maps to a known code.
+    #[must_use] 
     pub fn error_code(&self) -> Option<ErrorCode> {
         ErrorCode::try_from(self.code).ok()
     }
