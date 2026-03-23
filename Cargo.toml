@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "An async-first LSP server infrastructure crate using Tokio"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/VladimirMakaev/lsp-server-tokio"
+documentation = "https://docs.rs/lsp-server-tokio"
+homepage = "https://github.com/VladimirMakaev/lsp-server-tokio"
+readme = "README.md"
+keywords = ["lsp", "language-server", "tokio", "async", "json-rpc"]
+categories = ["development-tools", "asynchronous"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
