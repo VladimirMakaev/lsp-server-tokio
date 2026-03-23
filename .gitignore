@@ -22,3 +22,7 @@
 
 # Claude Code configuration
 .claude/
+
+# Ralph pipeline
+RALPH_NOTES.md
+.planning/
