@@ -83,6 +83,21 @@ use tokio_util::sync::CancellationToken;
 use crate::lifecycle::{ExitCode, LifecycleState, ProtocolError};
 use crate::{transport, Message, RequestQueue, Transport};
 
+/// A [`Connection`] backed by [`StdioTransport`].
+///
+/// This alias is useful when building stdio-based servers that want to use
+/// custom metadata types for request tracking without repeating the full
+/// `Connection<StdioTransport, I, O>` generic.
+///
+/// # Examples
+///
+/// ```no_run
+/// use lsp_server_tokio::{connection::StdioTransport, Connection, StdioConnection};
+/// 
+/// let conn: StdioConnection<String, String> = Connection::new(StdioTransport::new());
+/// ```
+pub type StdioConnection<I = (), O = ()> = Connection<StdioTransport, I, O>;
+
 /// The sender half of an LSP connection.
 ///
 /// This type can be used to send LSP messages over the transport.
@@ -704,6 +719,8 @@ where
     /// # Errors
     ///
     /// - [`ProtocolError::Disconnected`] if the connection is closed
+    /// - [`ProtocolError::InitializeTimeout`] if the client does not send
+    ///   `initialized` within 60 seconds
     /// - [`ProtocolError::Io`] if an I/O error occurs
     ///
     /// # Example
@@ -728,6 +745,7 @@ where
         server_capabilities: serde_json::Value,
     ) -> Result<(), ProtocolError> {
         use futures::SinkExt;
+        use std::time::Duration;
 
         // Build InitializeResult
         let result = serde_json::json!({
@@ -740,38 +758,41 @@ where
             return Err(ProtocolError::Io(e));
         }
 
-        // Wait for initialized notification
-        loop {
-            match self.receiver.next().await {
-                Some(Ok(Message::Notification(notif))) => {
-                    if notif.method == "initialized" {
-                        self.lifecycle_state = LifecycleState::Running;
-                        return Ok(());
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                match self.receiver.next().await {
+                    Some(Ok(Message::Notification(notif))) => {
+                        if notif.method == "initialized" {
+                            self.lifecycle_state = LifecycleState::Running;
+                            return Ok(());
+                        }
+                        // Drop other notifications silently
                     }
-                    // Drop other notifications silently
-                }
-                Some(Ok(Message::Request(req))) => {
-                    // Still initializing, reject with ServerNotInitialized
-                    let error = crate::ResponseError::new(
-                        crate::ErrorCode::ServerNotInitialized,
-                        "Server not yet initialized",
-                    );
-                    let response = Message::Response(crate::Response::err(req.id, error));
-                    if let Err(e) = self.sender.send(response).await {
+                    Some(Ok(Message::Request(req))) => {
+                        // Still initializing, reject with ServerNotInitialized
+                        let error = crate::ResponseError::new(
+                            crate::ErrorCode::ServerNotInitialized,
+                            "Server not yet initialized",
+                        );
+                        let response = Message::Response(crate::Response::err(req.id, error));
+                        if let Err(e) = self.sender.send(response).await {
+                            return Err(ProtocolError::Io(e));
+                        }
+                    }
+                    Some(Ok(Message::Response(_))) => {
+                        // Ignore unexpected responses
+                    }
+                    Some(Err(e)) => {
                         return Err(ProtocolError::Io(e));
                     }
-                }
-                Some(Ok(Message::Response(_))) => {
-                    // Ignore unexpected responses
-                }
-                Some(Err(e)) => {
-                    return Err(ProtocolError::Io(e));
-                }
-                None => {
-                    return Err(ProtocolError::Disconnected);
+                    None => {
+                        return Err(ProtocolError::Disconnected);
+                    }
                 }
             }
-        }
+        })
+        .await
+        .map_err(|_| ProtocolError::InitializeTimeout)?
     }
 
     /// Performs complete LSP initialization handshake.
@@ -1027,9 +1048,10 @@ impl Connection<StdioTransport, (), ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Request, Response};
+    use crate::{Request, Response, StdioConnection};
     use futures::SinkExt;
     use serde_json::json;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn connection_from_duplex_test() {
@@ -1284,6 +1306,16 @@ mod tests {
         assert_eq!(server.lifecycle_state(), LifecycleState::Running);
     }
 
+    #[test]
+    fn stdio_connection_alias_constructs_with_custom_metadata() {
+        let conn: StdioConnection<String, Response> =
+            Connection::new(StdioTransport::new());
+
+        assert_eq!(conn.lifecycle_state(), LifecycleState::Uninitialized);
+        assert!(!conn.request_queue.incoming.is_pending(&1.into()));
+        assert!(!conn.request_queue.outgoing.is_pending(&1.into()));
+    }
+
     #[tokio::test]
     async fn test_initialize_rejects_non_init_requests() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
@@ -1316,6 +1348,31 @@ mod tests {
 
         let server = server_task.await.unwrap();
         assert_eq!(server.lifecycle_state(), LifecycleState::Initializing);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_initialize_finish_times_out_without_initialized() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        client
+            .sender
+            .send(Message::Request(Request::new(1, "initialize", None)))
+            .await
+            .unwrap();
+
+        let (id, _params) = server.initialize_start().await.unwrap();
+
+        let server_task = tokio::spawn(async move { server.initialize_finish(id, json!({})).await });
+
+        let response = client.receiver.next().await.unwrap().unwrap();
+        assert!(response.is_response());
+
+        tokio::time::advance(Duration::from_secs(61)).await;
+
+        let result = server_task.await.unwrap();
+        assert!(matches!(result, Err(ProtocolError::InitializeTimeout)));
     }
 
     #[tokio::test]

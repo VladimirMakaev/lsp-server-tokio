@@ -226,6 +226,10 @@ pub enum ProtocolError {
     #[error("received request after shutdown: {0}")]
     AfterShutdown(String),
 
+    /// Timed out waiting for the `initialized` notification.
+    #[error("timed out waiting for initialized notification (60s)")]
+    InitializeTimeout,
+
     /// An I/O error occurred during protocol communication.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -408,6 +412,14 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("after shutdown"));
         assert!(msg.contains("textDocument/hover"));
+    }
+
+    #[test]
+    fn protocol_error_initialize_timeout_message() {
+        let err = ProtocolError::InitializeTimeout;
+        let msg = err.to_string();
+        assert!(msg.contains("timed out waiting for initialized notification"));
+        assert!(msg.contains("60s"));
     }
 
     #[test]
