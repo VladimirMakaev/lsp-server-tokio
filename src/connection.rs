@@ -412,11 +412,13 @@ where
     /// }
     /// # });
     /// ```
-    #[allow(deprecated)]
     pub fn route(&mut self, message: Message) -> crate::IncomingMessage {
         match message {
             Message::Request(req) => {
-                let token = self.register_cancellable_request(req.id.clone(), I::default());
+                let token = self.shutdown_token.child_token();
+                self.request_queue
+                    .incoming
+                    .register(req.id.clone(), I::default(), token.clone());
                 crate::IncomingMessage::Request(req, token)
             }
             Message::Notification(notif) => crate::IncomingMessage::Notification(notif),
@@ -475,47 +477,6 @@ impl<T, I, O> Connection<T, I, O>
 where
     T: AsyncRead + AsyncWrite,
 {
-    /// Registers an incoming request with automatic cancellation token creation.
-    ///
-    /// # Deprecated
-    ///
-    /// This method is deprecated. Use [`route()`](Connection::route) instead, which
-    /// automatically registers incoming requests and returns the token in the
-    /// [`IncomingMessage::Request`](crate::IncomingMessage::Request) variant.
-    ///
-    /// # Details
-    ///
-    /// This is a convenience method that creates a child token from the connection's
-    /// shutdown token and registers the request. The returned token:
-    /// - Is cancelled when $/cancelRequest is received for this ID
-    /// - Is cancelled when the server shuts down (inherits from `shutdown_token`)
-    ///
-    /// Pass this token to your request handler for cooperative cancellation.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The request ID
-    /// * `data` - User-defined metadata for this request
-    ///
-    /// # Returns
-    ///
-    /// A [`CancellationToken`] that will be triggered on cancel or shutdown.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use route() which auto-registers requests. The token is now included in IncomingMessage::Request."
-    )]
-    pub fn register_cancellable_request(
-        &mut self,
-        id: crate::RequestId,
-        data: I,
-    ) -> CancellationToken {
-        let token = self.shutdown_token.child_token();
-        self.request_queue
-            .incoming
-            .register(id, data, token.clone());
-        token
-    }
-
     /// Handles a $/cancelRequest notification.
     ///
     /// If the notification is a $/cancelRequest, parses the request ID from params
@@ -535,14 +496,15 @@ where
     /// # Example
     ///
     /// ```
-    /// use lsp_server_tokio::{Connection, Notification, IncomingMessage};
+    /// use lsp_server_tokio::{Connection, Notification, IncomingMessage, Request, Message, Response};
     ///
     /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
     /// let (stream, _) = tokio::io::duplex(4096);
-    /// let mut conn: Connection<_, String, ()> = Connection::new(stream);
+    /// let mut conn: Connection<_, (), Response> = Connection::new(stream);
     ///
-    /// // Register a request
-    /// let _token = conn.register_cancellable_request(42.into(), "test".to_string());
+    /// // Register a request via route()
+    /// let request = Message::Request(Request::new(42, "textDocument/hover", None));
+    /// let _ = conn.route(request);
     ///
     /// // Simulate receiving $/cancelRequest
     /// let cancel_notif = Notification::new(
@@ -1755,44 +1717,17 @@ mod tests {
     // =========================================================================
 
     #[test]
-    #[allow(deprecated)]
-    fn register_cancellable_request_creates_child_token() {
-        let (stream, _) = tokio::io::duplex(4096);
-        let mut conn: Connection<_, String, ()> = Connection::new(stream);
-
-        let token = conn.register_cancellable_request(1.into(), "test".to_string());
-
-        // Request should be pending
-        assert!(conn.request_queue.incoming.is_pending(&1.into()));
-
-        // Token should not be cancelled yet
-        assert!(!token.is_cancelled());
-
-        // Cancelling shutdown should cancel the child token
-        conn.shutdown_token.cancel();
-        assert!(token.is_cancelled());
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn register_cancellable_request_stores_metadata() {
-        let (stream, _) = tokio::io::duplex(4096);
-        let mut conn: Connection<_, String, ()> = Connection::new(stream);
-
-        conn.register_cancellable_request(1.into(), "hover_context".to_string());
-
-        let data = conn.request_queue.incoming.complete(&1.into());
-        assert_eq!(data, Some("hover_context".to_string()));
-    }
-
-    #[test]
-    #[allow(deprecated)]
     fn handle_cancel_request_cancels_pending() {
         let (stream, _) = tokio::io::duplex(4096);
-        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
-        // Register a cancellable request
-        let token = conn.register_cancellable_request(42.into(), "test".to_string());
+        // Register a request via route
+        let request = Request::new(42, "test", None);
+        let result = conn.route(Message::Request(request));
+        let token = match result {
+            IncomingMessage::Request(_, token) => token,
+            _ => panic!("Expected IncomingMessage::Request"),
+        };
         assert!(!token.is_cancelled());
 
         // Create cancel notification
@@ -1844,13 +1779,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)]
     async fn cancellation_propagates_to_spawned_handler() {
         let (stream, _) = tokio::io::duplex(4096);
-        let mut conn: Connection<_, String, ()> = Connection::new(stream);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
-        // Register a cancellable request
-        let token = conn.register_cancellable_request(1.into(), "test".to_string());
+        // Register a request via route
+        let request = Request::new(1, "test", None);
+        let result = conn.route(Message::Request(request));
+        let token = match result {
+            IncomingMessage::Request(_, token) => token,
+            _ => panic!("Expected IncomingMessage::Request"),
+        };
 
         // Spawn a handler that waits for cancellation
         let handle = tokio::spawn(async move {
