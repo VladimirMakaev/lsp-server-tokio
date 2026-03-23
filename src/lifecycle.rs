@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn protocol_error_is_debug() {
         let err = ProtocolError::Disconnected;
-        let debug = format!("{:?}", err);
+        let debug = format!("{err:?}");
         assert!(debug.contains("Disconnected"));
     }
 }

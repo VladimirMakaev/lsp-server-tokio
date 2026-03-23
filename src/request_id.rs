@@ -98,13 +98,13 @@ mod tests {
     #[test]
     fn display_integer() {
         let id = RequestId::Integer(42);
-        assert_eq!(format!("{}", id), "42");
+        assert_eq!(format!("{id}"), "42");
     }
 
     #[test]
     fn display_string() {
         let id = RequestId::String("abc-123".to_string());
-        assert_eq!(format!("{}", id), "abc-123");
+        assert_eq!(format!("{id}"), "abc-123");
     }
 
     #[test]

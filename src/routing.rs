@@ -244,7 +244,7 @@ mod tests {
         let request = Request::new(1, "test", None);
         let token = CancellationToken::new();
         let incoming = IncomingMessage::Request(request, token);
-        let debug_str = format!("{:?}", incoming);
+        let debug_str = format!("{incoming:?}");
         assert!(debug_str.contains("Request"));
     }
 
