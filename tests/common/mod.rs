@@ -113,8 +113,9 @@ impl TestClient {
         let mut header_line = String::new();
         self.stdout.read_line(&mut header_line).await?;
 
-        let content_length = parse_content_length(&header_line)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid Content-Length header"))?;
+        let content_length = parse_content_length(&header_line).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid Content-Length header")
+        })?;
 
         // Read blank line after header
         let mut blank_line = String::new();
@@ -125,8 +126,7 @@ impl TestClient {
         self.stdout.read_exact(&mut body).await?;
 
         // Parse JSON
-        serde_json::from_slice(&body)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        serde_json::from_slice(&body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Reads the next response message from the server.
@@ -149,7 +149,8 @@ impl TestClient {
     /// and waits for the server to exit cleanly.
     pub async fn shutdown(&mut self) -> io::Result<()> {
         // Send shutdown request
-        self.send_request("shutdown", serde_json::json!(null)).await?;
+        self.send_request("shutdown", serde_json::json!(null))
+            .await?;
 
         // Wait for shutdown response
         let response = self.read_response().await?;
@@ -161,7 +162,8 @@ impl TestClient {
         }
 
         // Send exit notification
-        self.send_notification("exit", serde_json::json!(null)).await?;
+        self.send_notification("exit", serde_json::json!(null))
+            .await?;
 
         // Wait for process to exit (with timeout)
         match timeout(Duration::from_secs(5), self.child.wait()).await {
@@ -194,7 +196,10 @@ pub fn encode_lsp_message(content: &Value) -> Vec<u8> {
 pub fn parse_content_length(line: &str) -> Option<usize> {
     let line = line.trim();
     let prefix = "Content-Length:";
-    if line.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+    if line
+        .to_ascii_lowercase()
+        .starts_with(&prefix.to_ascii_lowercase())
+    {
         let value = line[prefix.len()..].trim();
         value.parse().ok()
     } else {

@@ -133,7 +133,7 @@ pub enum IncomingMessage {
 /// assert_eq!(error.code, ErrorCode::MethodNotFound as i32);
 /// assert!(error.message.contains("unknown/method"));
 /// ```
-#[must_use] 
+#[must_use]
 pub fn method_not_found_response(request: &Request) -> Response {
     let error = ResponseError::new(
         ErrorCode::MethodNotFound,
@@ -169,10 +169,7 @@ pub fn method_not_found_response(request: &Request) -> Response {
 /// assert_eq!(error.code, ErrorCode::RequestCancelled as i32);
 /// ```
 pub fn cancelled_response(id: impl Into<crate::RequestId>) -> Response {
-    let error = ResponseError::new(
-        ErrorCode::RequestCancelled,
-        "Request was cancelled",
-    );
+    let error = ResponseError::new(ErrorCode::RequestCancelled, "Request was cancelled");
     Response::err(id, error)
 }
 

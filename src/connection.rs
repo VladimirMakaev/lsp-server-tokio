@@ -93,7 +93,7 @@ use crate::{transport, Message, RequestQueue, Transport};
 ///
 /// ```no_run
 /// use lsp_server_tokio::{connection::StdioTransport, Connection, StdioConnection};
-/// 
+///
 /// let conn: StdioConnection<String, String> = Connection::new(StdioTransport::new());
 /// ```
 pub type StdioConnection<I = (), O = ()> = Connection<StdioTransport, I, O>;
@@ -308,7 +308,7 @@ where
     }
 
     /// Returns the current lifecycle state.
-    #[must_use] 
+    #[must_use]
     pub fn lifecycle_state(&self) -> LifecycleState {
         self.lifecycle_state
     }
@@ -342,7 +342,7 @@ where
     /// });
     /// # });
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown_token.clone()
     }
@@ -500,10 +500,19 @@ where
     /// # Returns
     ///
     /// A [`CancellationToken`] that will be triggered on cancel or shutdown.
-    #[deprecated(since = "0.1.0", note = "Use route() which auto-registers requests. The token is now included in IncomingMessage::Request.")]
-    pub fn register_cancellable_request(&mut self, id: crate::RequestId, data: I) -> CancellationToken {
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use route() which auto-registers requests. The token is now included in IncomingMessage::Request."
+    )]
+    pub fn register_cancellable_request(
+        &mut self,
+        id: crate::RequestId,
+        data: I,
+    ) -> CancellationToken {
         let token = self.shutdown_token.child_token();
-        self.request_queue.incoming.register(id, data, token.clone());
+        self.request_queue
+            .incoming
+            .register(id, data, token.clone());
         token
     }
 
@@ -546,7 +555,7 @@ where
     /// # });
     /// ```
     pub fn handle_cancel_request(&mut self, notification: &crate::Notification) -> Option<bool> {
-        use crate::request_queue::{CANCEL_REQUEST_METHOD, parse_cancel_params};
+        use crate::request_queue::{parse_cancel_params, CANCEL_REQUEST_METHOD};
 
         if notification.method != CANCEL_REQUEST_METHOD {
             return None;
@@ -604,20 +613,23 @@ where
     /// assert!(rx.await.is_err());
     /// # });
     /// ```
-    pub async fn cancel(&mut self, id: impl Into<crate::RequestId>) -> Result<bool, std::io::Error> {
+    pub async fn cancel(
+        &mut self,
+        id: impl Into<crate::RequestId>,
+    ) -> Result<bool, std::io::Error> {
         use crate::request_queue::CANCEL_REQUEST_METHOD;
         use futures::SinkExt;
 
         let id = id.into();
 
         // Build the $/cancelRequest notification
-        let notification = crate::Notification::new(
-            CANCEL_REQUEST_METHOD,
-            Some(serde_json::json!({"id": id})),
-        );
+        let notification =
+            crate::Notification::new(CANCEL_REQUEST_METHOD, Some(serde_json::json!({"id": id})));
 
         // Send the notification
-        self.sender.send(Message::Notification(notification)).await?;
+        self.sender
+            .send(Message::Notification(notification))
+            .await?;
 
         // Cancel in the queue (returns true if was pending)
         Ok(self.request_queue.outgoing.cancel(&id))
@@ -669,10 +681,7 @@ where
                 Some(Ok(Message::Request(req))) => {
                     if req.method == "initialize" {
                         self.lifecycle_state = LifecycleState::Initializing;
-                        return Ok((
-                            req.id,
-                            req.params.unwrap_or(serde_json::Value::Null),
-                        ));
+                        return Ok((req.id, req.params.unwrap_or(serde_json::Value::Null)));
                     }
 
                     // Reject non-initialize requests with ServerNotInitialized
@@ -915,7 +924,7 @@ where
     ///
     /// The connection is in Running state after successful initialization
     /// and before shutdown is requested.
-    #[must_use] 
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.lifecycle_state == LifecycleState::Running
     }
@@ -923,7 +932,7 @@ where
     /// Returns true if shutdown has been requested.
     ///
     /// After shutdown, the server should only expect the exit notification.
-    #[must_use] 
+    #[must_use]
     pub fn is_shutting_down(&self) -> bool {
         self.lifecycle_state == LifecycleState::ShuttingDown
     }
@@ -948,7 +957,7 @@ pin_project! {
 
 impl StdioTransport {
     /// Creates a new stdio transport from stdin and stdout.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             stdin: tokio::io::stdin(),
@@ -1039,7 +1048,7 @@ impl Connection<StdioTransport, (), ()> {
     ///
     /// let conn: Connection<StdioTransport, String, String> = Connection::new(StdioTransport::new());
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn stdio() -> Self {
         Self::new(StdioTransport::new())
     }
@@ -1081,10 +1090,14 @@ mod tests {
         let mut server: Connection<_, (), ()> = Connection::new(server_stream);
 
         // Client sends request
-        let request = Message::Request(Request::new(1, "textDocument/hover", Some(json!({
-            "textDocument": {"uri": "file:///test.rs"},
-            "position": {"line": 10, "character": 5}
-        }))));
+        let request = Message::Request(Request::new(
+            1,
+            "textDocument/hover",
+            Some(json!({
+                "textDocument": {"uri": "file:///test.rs"},
+                "position": {"line": 10, "character": 5}
+            })),
+        ));
         client.sender.send(request).await.unwrap();
 
         // Server receives request
@@ -1092,9 +1105,12 @@ mod tests {
         assert!(received.is_request());
 
         // Server sends response
-        let response = Message::Response(Response::ok(1, json!({
-            "contents": "fn main()"
-        })));
+        let response = Message::Response(Response::ok(
+            1,
+            json!({
+                "contents": "fn main()"
+            }),
+        ));
         server.sender.send(response).await.unwrap();
 
         // Client receives response
@@ -1270,7 +1286,8 @@ mod tests {
 
         // Client sends initialize request
         let init_params = json!({"processId": 1234, "capabilities": {}});
-        let init_request = Message::Request(Request::new(1, "initialize", Some(init_params.clone())));
+        let init_request =
+            Message::Request(Request::new(1, "initialize", Some(init_params.clone())));
         client.sender.send(init_request).await.unwrap();
 
         // Server waits for initialize
@@ -1308,8 +1325,7 @@ mod tests {
 
     #[test]
     fn stdio_connection_alias_constructs_with_custom_metadata() {
-        let conn: StdioConnection<String, Response> =
-            Connection::new(StdioTransport::new());
+        let conn: StdioConnection<String, Response> = Connection::new(StdioTransport::new());
 
         assert_eq!(conn.lifecycle_state(), LifecycleState::Uninitialized);
         assert!(!conn.request_queue.incoming.is_pending(&1.into()));
@@ -1364,7 +1380,8 @@ mod tests {
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
-        let server_task = tokio::spawn(async move { server.initialize_finish(id, json!({})).await });
+        let server_task =
+            tokio::spawn(async move { server.initialize_finish(id, json!({})).await });
 
         let response = client.receiver.next().await.unwrap().unwrap();
         assert!(response.is_response());
@@ -1535,13 +1552,10 @@ mod tests {
         }
 
         // The wait task should complete now
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            wait_task,
-        )
-        .await
-        .expect("wait task should complete quickly")
-        .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), wait_task)
+            .await
+            .expect("wait task should complete quickly")
+            .unwrap();
 
         assert_eq!(result, "shutdown received");
     }
@@ -1579,7 +1593,10 @@ mod tests {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
-        let notification = Notification::new("textDocument/didOpen", Some(json!({"uri": "file:///test.rs"})));
+        let notification = Notification::new(
+            "textDocument/didOpen",
+            Some(json!({"uri": "file:///test.rs"})),
+        );
         let message = Message::Notification(notification);
 
         let result = conn.route(message);
@@ -1651,7 +1668,10 @@ mod tests {
         let result = conn.route(message);
         match result {
             IncomingMessage::ResponseUnknown(resp) => {
-                assert!(resp.id.is_none(), "Expected null id for parse error response");
+                assert!(
+                    resp.id.is_none(),
+                    "Expected null id for parse error response"
+                );
                 assert!(resp.error.is_some());
             }
             _ => panic!("Expected IncomingMessage::ResponseUnknown"),
@@ -1776,10 +1796,7 @@ mod tests {
         assert!(!token.is_cancelled());
 
         // Create cancel notification
-        let cancel_notif = Notification::new(
-            "$/cancelRequest",
-            Some(json!({"id": 42})),
-        );
+        let cancel_notif = Notification::new("$/cancelRequest", Some(json!({"id": 42})));
 
         // Handle it
         let result = conn.handle_cancel_request(&cancel_notif);
@@ -1794,10 +1811,7 @@ mod tests {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, String, ()> = Connection::new(stream);
 
-        let cancel_notif = Notification::new(
-            "$/cancelRequest",
-            Some(json!({"id": 999})),
-        );
+        let cancel_notif = Notification::new("$/cancelRequest", Some(json!({"id": 999})));
 
         let result = conn.handle_cancel_request(&cancel_notif);
         assert_eq!(result, Some(false));
@@ -1823,10 +1837,7 @@ mod tests {
         let mut conn: Connection<_, String, ()> = Connection::new(stream);
 
         // Missing id field
-        let cancel_notif = Notification::new(
-            "$/cancelRequest",
-            Some(json!({"other": "field"})),
-        );
+        let cancel_notif = Notification::new("$/cancelRequest", Some(json!({"other": "field"})));
 
         let result = conn.handle_cancel_request(&cancel_notif);
         assert_eq!(result, None);
@@ -1851,13 +1862,10 @@ mod tests {
         let _ = conn.request_queue.incoming.cancel(&1.into());
 
         // Handler should complete quickly
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            handle,
-        )
-        .await
-        .expect("Handler should complete quickly")
-        .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle)
+            .await
+            .expect("Handler should complete quickly")
+            .unwrap();
 
         assert_eq!(result, "cancelled");
     }

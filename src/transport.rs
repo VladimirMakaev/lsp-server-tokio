@@ -152,7 +152,7 @@ where
 /// assert!(received.is_request());
 /// # });
 /// ```
-#[must_use] 
+#[must_use]
 pub fn duplex_transport(buffer_size: usize) -> (Transport<DuplexStream>, Transport<DuplexStream>) {
     let (a, b) = tokio::io::duplex(buffer_size);
     (transport(a), transport(b))
@@ -172,10 +172,14 @@ mod tests {
         let (mut client, mut server) = duplex_transport(4096);
 
         // Client sends request
-        let request = Message::Request(Request::new(1, "textDocument/hover", Some(json!({
-            "textDocument": {"uri": "file:///test.rs"},
-            "position": {"line": 10, "character": 5}
-        }))));
+        let request = Message::Request(Request::new(
+            1,
+            "textDocument/hover",
+            Some(json!({
+                "textDocument": {"uri": "file:///test.rs"},
+                "position": {"line": 10, "character": 5}
+            })),
+        ));
         client.send(request).await.expect("send request");
 
         // Server receives request
@@ -187,9 +191,12 @@ mod tests {
         }
 
         // Server sends response
-        let response = Message::Response(Response::ok(1, json!({
-            "contents": "fn main()"
-        })));
+        let response = Message::Response(Response::ok(
+            1,
+            json!({
+                "contents": "fn main()"
+            }),
+        ));
         server.send(response).await.expect("send response");
 
         // Client receives response
@@ -277,19 +284,14 @@ mod tests {
         let client_msg = Message::Request(Request::new(1, "client/message", None));
         let server_msg = Message::Notification(Notification::new("server/notification", None));
 
-        let (client_send, server_send) = tokio::join!(
-            client.send(client_msg),
-            server.send(server_msg)
-        );
+        let (client_send, server_send) =
+            tokio::join!(client.send(client_msg), server.send(server_msg));
 
         client_send.expect("client send");
         server_send.expect("server send");
 
         // Receive on both sides
-        let (from_client, from_server) = tokio::join!(
-            server.next(),
-            client.next()
-        );
+        let (from_client, from_server) = tokio::join!(server.next(), client.next());
 
         // Server receives client's message
         let from_client = from_client.expect("receive from client").expect("decode");
@@ -312,9 +314,13 @@ mod tests {
 
         // Create a message with large params (~10KB of data)
         let large_data: String = "x".repeat(10_000);
-        let request = Message::Request(Request::new(42, "large/data", Some(json!({
-            "content": large_data.clone()
-        }))));
+        let request = Message::Request(Request::new(
+            42,
+            "large/data",
+            Some(json!({
+                "content": large_data.clone()
+            })),
+        ));
 
         client.send(request).await.expect("send large message");
 

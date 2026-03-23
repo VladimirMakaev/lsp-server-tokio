@@ -113,7 +113,7 @@ impl LifecycleState {
     /// assert!(state.is_request_allowed("shutdown"));
     /// assert!(!state.is_request_allowed("initialize")); // Can't re-initialize
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn is_request_allowed(&self, method: &str) -> bool {
         match self {
             Self::Uninitialized => method == "initialize",
@@ -143,7 +143,7 @@ impl LifecycleState {
     /// assert!(state.is_notification_allowed("initialized"));
     /// assert!(!state.is_notification_allowed("textDocument/didOpen"));
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn is_notification_allowed(&self, method: &str) -> bool {
         match self {
             Self::Uninitialized | Self::ShuttingDown => method == "exit",
