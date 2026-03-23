@@ -109,9 +109,7 @@ async fn initialize(client: &mut TestClient) -> std::io::Result<Value> {
     let response = client.read_response().await?;
 
     // Send initialized notification
-    client
-        .send_notification("initialized", json!({}))
-        .await?;
+    client.send_notification("initialized", json!({})).await?;
 
     Ok(response)
 }
@@ -119,9 +117,7 @@ async fn initialize(client: &mut TestClient) -> std::io::Result<Value> {
 /// Tests the full LSP lifecycle: initialize, initialized, shutdown, exit.
 #[tokio::test]
 async fn test_full_lifecycle() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     // Initialize
     let init_response = initialize(&mut client).await.expect("Initialize failed");
@@ -144,16 +140,17 @@ async fn test_full_lifecycle() {
 /// Tests document formatting with uppercase transformation.
 #[tokio::test]
 async fn test_format_document() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     initialize(&mut client).await.expect("Initialize failed");
 
     // Open a document
     let uri = "file:///tmp/test.txt";
     client
-        .send_notification("textDocument/didOpen", create_did_open_params(uri, "hello world"))
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri, "hello world"),
+        )
         .await
         .expect("didOpen failed");
 
@@ -183,9 +180,7 @@ async fn test_format_document() {
 /// Tests incremental document changes.
 #[tokio::test]
 async fn test_incremental_changes() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     initialize(&mut client).await.expect("Initialize failed");
 
@@ -204,8 +199,14 @@ async fn test_incremental_changes() {
         uri,
         2,
         Range {
-            start: Position { line: 0, character: 5 },
-            end: Position { line: 0, character: 8 },
+            start: Position {
+                line: 0,
+                character: 5,
+            },
+            end: Position {
+                line: 0,
+                character: 8,
+            },
         },
         "ONE",
     );
@@ -242,9 +243,7 @@ async fn test_incremental_changes() {
 /// Tests multi-document workspace handling.
 #[tokio::test]
 async fn test_multi_document_workspace() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     initialize(&mut client).await.expect("Initialize failed");
 
@@ -253,12 +252,18 @@ async fn test_multi_document_workspace() {
     let uri2 = "file:///tmp/doc2.txt";
 
     client
-        .send_notification("textDocument/didOpen", create_did_open_params(uri1, "first"))
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri1, "first"),
+        )
         .await
         .expect("didOpen doc1 failed");
 
     client
-        .send_notification("textDocument/didOpen", create_did_open_params(uri2, "second"))
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri2, "second"),
+        )
         .await
         .expect("didOpen doc2 failed");
 
@@ -315,16 +320,17 @@ async fn test_multi_document_workspace() {
 /// Tests request cancellation.
 #[tokio::test]
 async fn test_cancellation() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     initialize(&mut client).await.expect("Initialize failed");
 
     // Open a document
     let uri = "file:///tmp/test.txt";
     client
-        .send_notification("textDocument/didOpen", create_did_open_params(uri, "test content"))
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri, "test content"),
+        )
         .await
         .expect("didOpen failed");
 
@@ -336,10 +342,7 @@ async fn test_cancellation() {
 
     // Immediately send cancel request
     client
-        .send_notification(
-            "$/cancelRequest",
-            json!({ "id": req_id }),
-        )
+        .send_notification("$/cancelRequest", json!({ "id": req_id }))
         .await
         .expect("Cancel request failed");
 
@@ -362,9 +365,7 @@ async fn test_cancellation() {
 /// Tests handling of unknown methods.
 #[tokio::test]
 async fn test_unknown_method() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     initialize(&mut client).await.expect("Initialize failed");
 
@@ -388,9 +389,7 @@ async fn test_unknown_method() {
 /// Tests shutdown during a pending request.
 #[tokio::test]
 async fn test_shutdown_during_request() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     initialize(&mut client).await.expect("Initialize failed");
 
@@ -454,9 +453,7 @@ async fn test_shutdown_during_request() {
 /// Tests that formatting an unknown document returns an error.
 #[tokio::test]
 async fn test_format_unknown_document() {
-    let mut client = TestClient::spawn()
-        .await
-        .expect("Failed to spawn server");
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
 
     initialize(&mut client).await.expect("Initialize failed");
 
@@ -470,7 +467,10 @@ async fn test_format_unknown_document() {
     let response = client.read_response().await.expect("Read response failed");
 
     // Should get an error (document not found)
-    assert!(response.get("error").is_some(), "Should have error for unknown document");
+    assert!(
+        response.get("error").is_some(),
+        "Should have error for unknown document"
+    );
 
     client.shutdown().await.expect("Shutdown failed");
 }

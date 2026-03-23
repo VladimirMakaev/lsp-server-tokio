@@ -28,8 +28,8 @@ use lsp_server_tokio::{
     Notification, Response,
 };
 use lsp_types::{
-    DocumentFormattingParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, InitializeParams, LogMessageParams, MessageType, Position, Range,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentFormattingParams, InitializeParams, LogMessageParams, MessageType, Position, Range,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use tokio_util::sync::CancellationToken;
@@ -60,13 +60,15 @@ impl ServerState {
 #[tokio::main]
 async fn main() {
     // Create a connection over stdio for LSP communication
-    let mut conn: Connection<_, String, Response> = Connection::new(
-        lsp_server_tokio::connection::StdioTransport::new(),
-    );
+    let mut conn: Connection<_, String, Response> =
+        Connection::new(lsp_server_tokio::connection::StdioTransport::new());
 
     // Perform LSP initialization handshake
     let capabilities = server_capabilities();
-    match conn.initialize(serde_json::to_value(capabilities).unwrap()).await {
+    match conn
+        .initialize(serde_json::to_value(capabilities).unwrap())
+        .await
+    {
         Ok(params) => {
             // Parse client's initialize params to understand client capabilities
             if let Ok(init_params) = serde_json::from_value::<InitializeParams>(params) {
@@ -87,7 +89,12 @@ async fn main() {
     // Initialize server state
     let mut state = ServerState::new();
 
-    log_message(&mut conn, MessageType::INFO, "Formatter server ready".to_string()).await;
+    log_message(
+        &mut conn,
+        MessageType::INFO,
+        "Formatter server ready".to_string(),
+    )
+    .await;
 
     // Main message loop
     while let Some(result) = conn.receiver.next().await {
@@ -421,15 +428,33 @@ mod tests {
     fn test_position_to_offset_single_line() {
         let content = "hello world";
         assert_eq!(
-            position_to_offset(content, Position { line: 0, character: 0 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
             0
         );
         assert_eq!(
-            position_to_offset(content, Position { line: 0, character: 5 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 0,
+                    character: 5
+                }
+            ),
             5
         );
         assert_eq!(
-            position_to_offset(content, Position { line: 0, character: 11 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 0,
+                    character: 11
+                }
+            ),
             11
         );
     }
@@ -438,19 +463,43 @@ mod tests {
     fn test_position_to_offset_multi_line() {
         let content = "line1\nline2\nline3";
         assert_eq!(
-            position_to_offset(content, Position { line: 0, character: 0 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
             0
         );
         assert_eq!(
-            position_to_offset(content, Position { line: 1, character: 0 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 1,
+                    character: 0
+                }
+            ),
             6
         );
         assert_eq!(
-            position_to_offset(content, Position { line: 2, character: 0 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 2,
+                    character: 0
+                }
+            ),
             12
         );
         assert_eq!(
-            position_to_offset(content, Position { line: 2, character: 5 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 2,
+                    character: 5
+                }
+            ),
             17
         );
     }
@@ -460,12 +509,24 @@ mod tests {
         let content = "short";
         // Beyond last character on line
         assert_eq!(
-            position_to_offset(content, Position { line: 0, character: 100 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 0,
+                    character: 100
+                }
+            ),
             5
         );
         // Beyond last line
         assert_eq!(
-            position_to_offset(content, Position { line: 10, character: 0 }),
+            position_to_offset(
+                content,
+                Position {
+                    line: 10,
+                    character: 0
+                }
+            ),
             5
         );
     }
@@ -519,8 +580,14 @@ mod tests {
         };
         let changes = vec![lsp_types::TextDocumentContentChangeEvent {
             range: Some(Range {
-                start: Position { line: 0, character: 6 },
-                end: Position { line: 0, character: 11 },
+                start: Position {
+                    line: 0,
+                    character: 6,
+                },
+                end: Position {
+                    line: 0,
+                    character: 11,
+                },
             }),
             range_length: None,
             text: "rust".to_string(),
@@ -537,8 +604,14 @@ mod tests {
         };
         let changes = vec![lsp_types::TextDocumentContentChangeEvent {
             range: Some(Range {
-                start: Position { line: 0, character: 5 },
-                end: Position { line: 0, character: 5 },
+                start: Position {
+                    line: 0,
+                    character: 5,
+                },
+                end: Position {
+                    line: 0,
+                    character: 5,
+                },
             }),
             range_length: None,
             text: " world".to_string(),

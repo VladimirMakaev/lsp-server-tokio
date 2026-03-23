@@ -134,14 +134,14 @@ impl ResponseError {
     /// Adds additional data to this error.
     ///
     /// Consumes self and returns a new `ResponseError` with the data attached.
-    #[must_use] 
+    #[must_use]
     pub fn with_data(mut self, data: Value) -> Self {
         self.data = Some(data);
         self
     }
 
     /// Returns the error code as an `ErrorCode` enum, if it maps to a known code.
-    #[must_use] 
+    #[must_use]
     pub fn error_code(&self) -> Option<ErrorCode> {
         ErrorCode::try_from(self.code).ok()
     }

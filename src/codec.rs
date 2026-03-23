@@ -73,9 +73,11 @@ pub struct LspCodec {
 
 impl LspCodec {
     /// Creates a new `LspCodec` ready to encode and decode messages.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
-        Self { content_length: None }
+        Self {
+            content_length: None,
+        }
     }
 }
 
@@ -121,8 +123,8 @@ impl Encoder<Message> for LspCodec {
     type Error = io::Error;
 
     fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let json = serde_json::to_vec(&item)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let json =
+            serde_json::to_vec(&item).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // Reserve space for header + body
         // Header format: "Content-Length: {n}\r\n\r\n" (max ~30 bytes for reasonable sizes)
@@ -143,7 +145,9 @@ impl Encoder<Message> for LspCodec {
 /// Returns the index of the first byte of the first occurrence of `needle`
 /// within `haystack`, or `None` if not found.
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Parses the Content-Length value from HTTP-style headers.
@@ -153,8 +157,8 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// but the LSP spec recommends being lenient with header casing for interoperability.
 fn parse_content_length(headers: &[u8]) -> io::Result<usize> {
     // Headers are ASCII, so this is safe
-    let headers_str = std::str::from_utf8(headers)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let headers_str =
+        std::str::from_utf8(headers).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     for line in headers_str.split("\r\n") {
         // Case-insensitive match for robustness per LSP spec recommendation
@@ -162,18 +166,23 @@ fn parse_content_length(headers: &[u8]) -> io::Result<usize> {
         if line_lower.strip_prefix("content-length:").is_some() {
             // Get the actual value from the original line (after the colon)
             let value = &line["content-length:".len()..];
-            return value.trim().parse()
+            return value
+                .trim()
+                .parse()
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
         }
     }
 
-    Err(io::Error::new(io::ErrorKind::InvalidData, "Missing Content-Length header"))
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Missing Content-Length header",
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Notification, Request, Response, ResponseError, ErrorCode};
+    use crate::{ErrorCode, Notification, Request, Response, ResponseError};
     use serde_json::json;
 
     // ============== Encoder Tests ==============
@@ -325,8 +334,12 @@ mod tests {
         let json1 = r#"{"jsonrpc":"2.0","id":1,"method":"first"}"#;
         let json2 = r#"{"jsonrpc":"2.0","id":2,"method":"second"}"#;
 
-        buf.extend_from_slice(format!("Content-Length: {}\r\n\r\n{}", json1.len(), json1).as_bytes());
-        buf.extend_from_slice(format!("Content-Length: {}\r\n\r\n{}", json2.len(), json2).as_bytes());
+        buf.extend_from_slice(
+            format!("Content-Length: {}\r\n\r\n{}", json1.len(), json1).as_bytes(),
+        );
+        buf.extend_from_slice(
+            format!("Content-Length: {}\r\n\r\n{}", json2.len(), json2).as_bytes(),
+        );
 
         // Decode first
         let msg1 = codec.decode(&mut buf).unwrap().unwrap();
@@ -357,7 +370,11 @@ mod tests {
         let mut buf = BytesMut::new();
 
         // Create various message types
-        let request = Message::Request(Request::new(123, "textDocument/completion", Some(json!({"position": {"line": 10}}))));
+        let request = Message::Request(Request::new(
+            123,
+            "textDocument/completion",
+            Some(json!({"position": {"line": 10}})),
+        ));
         let response = Message::Response(Response::ok(456, json!({"items": []})));
         let notification = Message::Notification(Notification::new("textDocument/didSave", None));
 
@@ -454,7 +471,11 @@ mod tests {
         let mut buf = BytesMut::new();
 
         let invalid_json = "{ not valid json }";
-        let framed = format!("Content-Length: {}\r\n\r\n{}", invalid_json.len(), invalid_json);
+        let framed = format!(
+            "Content-Length: {}\r\n\r\n{}",
+            invalid_json.len(),
+            invalid_json
+        );
         buf.extend_from_slice(framed.as_bytes());
 
         let result = codec.decode(&mut buf);

@@ -132,7 +132,10 @@ mod tests {
         map.insert(RequestId::Integer(1), "first");
         map.insert(RequestId::String("abc".to_string()), "second");
         assert_eq!(map.get(&RequestId::Integer(1)), Some(&"first"));
-        assert_eq!(map.get(&RequestId::String("abc".to_string())), Some(&"second"));
+        assert_eq!(
+            map.get(&RequestId::String("abc".to_string())),
+            Some(&"second")
+        );
     }
 
     #[test]

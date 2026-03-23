@@ -111,7 +111,9 @@ impl<'de> Deserialize<'de> for Response {
 
         // Deserialize as a generic Value first to check field presence
         let v = Value::deserialize(deserializer)?;
-        let obj = v.as_object().ok_or_else(|| D::Error::custom("expected object"))?;
+        let obj = v
+            .as_object()
+            .ok_or_else(|| D::Error::custom("expected object"))?;
 
         // Check if result or error field is present (not just non-null)
         let has_result = obj.contains_key("result");
@@ -158,10 +160,7 @@ impl<'de> Deserialize<'de> for Response {
             if error_val.is_null() {
                 None
             } else {
-                Some(
-                    serde_json::from_value::<ResponseError>(error_val)
-                        .map_err(D::Error::custom)?,
-                )
+                Some(serde_json::from_value::<ResponseError>(error_val).map_err(D::Error::custom)?)
             }
         } else {
             None
@@ -200,7 +199,7 @@ impl Response {
     /// Creates a parse error response where the request id could not be determined.
     ///
     /// Per JSON-RPC 2.0 spec, the id MUST be null when the request id cannot be parsed.
-    #[must_use] 
+    #[must_use]
     pub fn parse_error(error: ResponseError) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -299,19 +298,19 @@ pub enum Message {
 
 impl Message {
     /// Returns `true` if this is a Request message.
-    #[must_use] 
+    #[must_use]
     pub fn is_request(&self) -> bool {
         matches!(self, Message::Request(_))
     }
 
     /// Returns `true` if this is a Response message.
-    #[must_use] 
+    #[must_use]
     pub fn is_response(&self) -> bool {
         matches!(self, Message::Response(_))
     }
 
     /// Returns `true` if this is a Notification message.
-    #[must_use] 
+    #[must_use]
     pub fn is_notification(&self) -> bool {
         matches!(self, Message::Notification(_))
     }
@@ -516,7 +515,8 @@ mod tests {
 
     #[test]
     fn message_discriminates_response_err() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
         let msg: Message = serde_json::from_str(json).unwrap();
         assert!(msg.is_response());
 
@@ -600,7 +600,11 @@ mod tests {
 
     #[test]
     fn message_roundtrip_request() {
-        let req = Request::new(42, "textDocument/hover", Some(json!({"position": {"line": 0}})));
+        let req = Request::new(
+            42,
+            "textDocument/hover",
+            Some(json!({"position": {"line": 0}})),
+        );
         let msg = Message::Request(req);
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: Message = serde_json::from_str(&json).unwrap();

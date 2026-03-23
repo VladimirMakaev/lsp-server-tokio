@@ -78,8 +78,10 @@ pub use error::{ErrorCode, ResponseError};
 pub use lifecycle::{ExitCode, LifecycleState, ProtocolError};
 pub use message::{Message, Notification, Request, Response};
 pub use request_id::RequestId;
-pub use request_queue::{IncomingRequests, OutgoingRequests, RequestQueue, parse_cancel_params, CANCEL_REQUEST_METHOD};
-pub use routing::{method_not_found_response, IncomingMessage, cancelled_response};
+pub use request_queue::{
+    parse_cancel_params, IncomingRequests, OutgoingRequests, RequestQueue, CANCEL_REQUEST_METHOD,
+};
+pub use routing::{cancelled_response, method_not_found_response, IncomingMessage};
 pub use transport::{duplex_transport, transport, Transport};
 
 // Re-export CancellationToken for ergonomic use with IncomingMessage::Request
