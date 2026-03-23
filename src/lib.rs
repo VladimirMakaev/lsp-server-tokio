@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::pedantic)]
+
 //! # lsp-server-tokio
 //!
 //! An async-first Rust crate for building LSP (Language Server Protocol) servers using Tokio.
@@ -48,7 +50,7 @@
 //! ## Transport Layer
 //!
 //! - [`Transport`] - Type alias for `Framed<T, LspCodec>` providing Stream + Sink
-//! - [`transport()`] - Factory function wrapping any AsyncRead + AsyncWrite
+//! - [`transport()`] - Factory function wrapping any `AsyncRead` + `AsyncWrite`
 //! - [`duplex_transport()`] - Creates connected in-memory transports for testing
 //! - [`LspCodec`] - Encoder/Decoder for Content-Length message framing
 //!

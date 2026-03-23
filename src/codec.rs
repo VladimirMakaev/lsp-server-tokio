@@ -73,6 +73,7 @@ pub struct LspCodec {
 
 impl LspCodec {
     /// Creates a new `LspCodec` ready to encode and decode messages.
+    #[must_use] 
     pub fn new() -> Self {
         Self { content_length: None }
     }
@@ -86,9 +87,8 @@ impl Decoder for LspCodec {
         // If we don't have content length yet, parse headers
         if self.content_length.is_none() {
             // Look for header terminator
-            let header_end = match find_subsequence(src, HEADER_TERMINATOR) {
-                Some(pos) => pos,
-                None => return Ok(None), // Need more data
+            let Some(header_end) = find_subsequence(src, HEADER_TERMINATOR) else {
+                return Ok(None); // Need more data
             };
 
             // Parse Content-Length from headers

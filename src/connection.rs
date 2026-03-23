@@ -293,6 +293,7 @@ where
     }
 
     /// Returns the current lifecycle state.
+    #[must_use] 
     pub fn lifecycle_state(&self) -> LifecycleState {
         self.lifecycle_state
     }
@@ -326,6 +327,7 @@ where
     /// });
     /// # });
     /// ```
+    #[must_use] 
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown_token.clone()
     }
@@ -471,7 +473,7 @@ where
     /// This is a convenience method that creates a child token from the connection's
     /// shutdown token and registers the request. The returned token:
     /// - Is cancelled when $/cancelRequest is received for this ID
-    /// - Is cancelled when the server shuts down (inherits from shutdown_token)
+    /// - Is cancelled when the server shuts down (inherits from `shutdown_token`)
     ///
     /// Pass this token to your request handler for cooperative cancellation.
     ///
@@ -483,7 +485,7 @@ where
     /// # Returns
     ///
     /// A [`CancellationToken`] that will be triggered on cancel or shutdown.
-    #[deprecated(since = "0.2.0", note = "Use route() which auto-registers requests. The token is now included in IncomingMessage::Request.")]
+    #[deprecated(since = "0.1.0", note = "Use route() which auto-registers requests. The token is now included in IncomingMessage::Request.")]
     pub fn register_cancellable_request(&mut self, id: crate::RequestId, data: I) -> CancellationToken {
         let token = self.shutdown_token.child_token();
         self.request_queue.incoming.register(id, data, token.clone());
@@ -561,6 +563,10 @@ where
     /// - `Ok(true)` if the request was pending and cancelled
     /// - `Ok(false)` if the request was not found in the queue
     /// - `Err` if sending the notification failed
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cancellation notification cannot be sent to the peer.
     ///
     /// # Example
     ///
@@ -652,18 +658,18 @@ where
                             req.id,
                             req.params.unwrap_or(serde_json::Value::Null),
                         ));
-                    } else {
-                        // Reject non-initialize requests with ServerNotInitialized
-                        let error = crate::ResponseError::new(
-                            crate::ErrorCode::ServerNotInitialized,
-                            "Server not yet initialized",
-                        );
-                        let response = Message::Response(crate::Response::err(req.id, error));
-                        if let Err(e) = self.sender.send(response).await {
-                            return Err(ProtocolError::Io(e));
-                        }
-                        // Continue waiting for initialize
                     }
+
+                    // Reject non-initialize requests with ServerNotInitialized
+                    let error = crate::ResponseError::new(
+                        crate::ErrorCode::ServerNotInitialized,
+                        "Server not yet initialized",
+                    );
+                    let response = Message::Response(crate::Response::err(req.id, error));
+                    if let Err(e) = self.sender.send(response).await {
+                        return Err(ProtocolError::Io(e));
+                    }
+                    // Continue waiting for initialize
                 }
                 Some(Ok(Message::Notification(notif))) => {
                     if notif.method == "exit" {
@@ -686,7 +692,7 @@ where
 
     /// Completes the initialization handshake.
     ///
-    /// Sends the InitializeResult response and waits for the initialized
+    /// Sends the `InitializeResult` response and waits for the initialized
     /// notification from the client. After this returns `Ok(())`, the
     /// connection is in Running state and ready for normal operation.
     ///
@@ -808,7 +814,7 @@ where
 
     /// Handles a shutdown request.
     ///
-    /// Transitions to ShuttingDown state, cancels the shutdown token,
+    /// Transitions to `ShuttingDown` state, cancels the shutdown token,
     /// and sends a null response. After this, only exit notification
     /// should be received.
     ///
@@ -888,6 +894,7 @@ where
     ///
     /// The connection is in Running state after successful initialization
     /// and before shutdown is requested.
+    #[must_use] 
     pub fn is_running(&self) -> bool {
         self.lifecycle_state == LifecycleState::Running
     }
@@ -895,6 +902,7 @@ where
     /// Returns true if shutdown has been requested.
     ///
     /// After shutdown, the server should only expect the exit notification.
+    #[must_use] 
     pub fn is_shutting_down(&self) -> bool {
         self.lifecycle_state == LifecycleState::ShuttingDown
     }
@@ -919,6 +927,7 @@ pin_project! {
 
 impl StdioTransport {
     /// Creates a new stdio transport from stdin and stdout.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             stdin: tokio::io::stdin(),
@@ -1009,6 +1018,7 @@ impl Connection<StdioTransport, (), ()> {
     ///
     /// let conn: Connection<StdioTransport, String, String> = Connection::new(StdioTransport::new());
     /// ```
+    #[must_use] 
     pub fn stdio() -> Self {
         Self::new(StdioTransport::new())
     }
@@ -1781,7 +1791,7 @@ mod tests {
         });
 
         // Cancel the request
-        conn.request_queue.incoming.cancel(&1.into());
+        let _ = conn.request_queue.incoming.cancel(&1.into());
 
         // Handler should complete quickly
         let result = tokio::time::timeout(

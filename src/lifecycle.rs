@@ -11,7 +11,7 @@
 //! 1. **Uninitialized** - Connection established, only `initialize` request allowed
 //! 2. **Initializing** - `initialize` received, only `initialized` notification allowed
 //! 3. **Running** - Normal operation, all messages except `initialize` allowed
-//! 4. **ShuttingDown** - `shutdown` received, only `exit` notification allowed
+//! 4. **`ShuttingDown`** - `shutdown` received, only `exit` notification allowed
 //! 5. **Exited** - `exit` received, connection should close
 //!
 //! Messages received in invalid states should be rejected (requests) or dropped (notifications).
@@ -100,7 +100,7 @@ impl LifecycleState {
     /// | Uninitialized | `initialize` only |
     /// | Initializing | None |
     /// | Running | All except `initialize` |
-    /// | ShuttingDown | None |
+    /// | `ShuttingDown` | None |
     /// | Exited | None |
     ///
     /// # Examples
@@ -113,13 +113,12 @@ impl LifecycleState {
     /// assert!(state.is_request_allowed("shutdown"));
     /// assert!(!state.is_request_allowed("initialize")); // Can't re-initialize
     /// ```
+    #[must_use] 
     pub fn is_request_allowed(&self, method: &str) -> bool {
         match self {
             Self::Uninitialized => method == "initialize",
-            Self::Initializing => false,
+            Self::Initializing | Self::ShuttingDown | Self::Exited => false,
             Self::Running => method != "initialize",
-            Self::ShuttingDown => false,
-            Self::Exited => false,
         }
     }
 
@@ -132,7 +131,7 @@ impl LifecycleState {
     /// | Uninitialized | `exit` only |
     /// | Initializing | `initialized` only |
     /// | Running | All |
-    /// | ShuttingDown | `exit` only |
+    /// | `ShuttingDown` | `exit` only |
     /// | Exited | None |
     ///
     /// # Examples
@@ -144,12 +143,12 @@ impl LifecycleState {
     /// assert!(state.is_notification_allowed("initialized"));
     /// assert!(!state.is_notification_allowed("textDocument/didOpen"));
     /// ```
+    #[must_use] 
     pub fn is_notification_allowed(&self, method: &str) -> bool {
         match self {
-            Self::Uninitialized => method == "exit",
+            Self::Uninitialized | Self::ShuttingDown => method == "exit",
             Self::Initializing => method == "initialized",
             Self::Running => true,
-            Self::ShuttingDown => method == "exit",
             Self::Exited => false,
         }
     }

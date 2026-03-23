@@ -152,6 +152,7 @@ where
 /// assert!(received.is_request());
 /// # });
 /// ```
+#[must_use] 
 pub fn duplex_transport(buffer_size: usize) -> (Transport<DuplexStream>, Transport<DuplexStream>) {
     let (a, b) = tokio::io::duplex(buffer_size);
     (transport(a), transport(b))

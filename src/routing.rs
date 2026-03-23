@@ -106,10 +106,10 @@ pub enum IncomingMessage {
     ResponseUnknown(Response),
 }
 
-/// Creates a MethodNotFound error response for an unhandled request.
+/// Creates a `MethodNotFound` error response for an unhandled request.
 ///
 /// This helper creates a properly formatted JSON-RPC 2.0 error response
-/// with error code `-32601` (MethodNotFound) and a message indicating
+/// with error code `-32601` (`MethodNotFound`) and a message indicating
 /// which method was not found.
 ///
 /// # Arguments
@@ -118,7 +118,7 @@ pub enum IncomingMessage {
 ///
 /// # Returns
 ///
-/// A [`Response`] with an error containing the MethodNotFound code.
+/// A [`Response`] with an error containing the `MethodNotFound` code.
 ///
 /// # Example
 ///
@@ -133,6 +133,7 @@ pub enum IncomingMessage {
 /// assert_eq!(error.code, ErrorCode::MethodNotFound as i32);
 /// assert!(error.message.contains("unknown/method"));
 /// ```
+#[must_use] 
 pub fn method_not_found_response(request: &Request) -> Response {
     let error = ResponseError::new(
         ErrorCode::MethodNotFound,
@@ -141,10 +142,10 @@ pub fn method_not_found_response(request: &Request) -> Response {
     Response::err(request.id.clone(), error)
 }
 
-/// Creates a RequestCancelled error response for a cancelled request.
+/// Creates a `RequestCancelled` error response for a cancelled request.
 ///
 /// This helper creates a properly formatted JSON-RPC 2.0 error response
-/// with error code `-32800` (RequestCancelled) and a standard message.
+/// with error code `-32800` (`RequestCancelled`) and a standard message.
 /// Use this when a request has been cancelled via $/cancelRequest.
 ///
 /// # Arguments
@@ -153,7 +154,7 @@ pub fn method_not_found_response(request: &Request) -> Response {
 ///
 /// # Returns
 ///
-/// A [`Response`] with an error containing the RequestCancelled code.
+/// A [`Response`] with an error containing the `RequestCancelled` code.
 ///
 /// # Example
 ///
