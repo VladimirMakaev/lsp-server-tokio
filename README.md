@@ -1,29 +1,81 @@
 # lsp-server-tokio
 
-An async-first Rust crate for building Language Server Protocol (LSP) servers with Tokio.
+[![crates.io](https://img.shields.io/crates/v/lsp-server-tokio.svg)](https://crates.io/crates/lsp-server-tokio)
+[![docs.rs](https://img.shields.io/docsrs/lsp-server-tokio)](https://docs.rs/lsp-server-tokio)
+[![CI](https://github.com/VladimirMakaev/lsp-server-tokio/actions/workflows/ci.yml/badge.svg)](https://github.com/VladimirMakaev/lsp-server-tokio/actions/workflows/ci.yml)
 
-`lsp-server-tokio` provides transport-agnostic infrastructure for JSON-RPC/LSP servers, including framed I/O, request tracking, lifecycle enforcement, cancellation, and routing helpers.
+`lsp-server-tokio` is an async-first Rust crate for building Language Server Protocol servers on Tokio. It sits between `lsp-server` and `tower-lsp`: lower-level and transport-agnostic like `lsp-server`, but designed for async I/O, explicit routing, cooperative cancellation, and testable server infrastructure without a framework trait or `tower` stack.
 
-## Features
+## Quick Start
 
-- Async LSP transport built on Tokio
-- `Connection` API with split sender and receiver halves
-- `StdioConnection` alias for ergonomic stdio-based servers
-- `LspCodec` for `Content-Length` framed messages
-- `RequestQueue` utilities for incoming and outgoing request tracking
-- Lifecycle helpers for initialize, shutdown, and exit handling
-- In-memory duplex transport for tests and examples
-
-## Installation
-
-Add the crate to your `Cargo.toml`:
+Add the crate to `Cargo.toml`:
 
 ```toml
 [dependencies]
-lsp-server-tokio = "0.1.0"
+lsp-server-tokio = "0.1"
+futures = "0.3"
+serde_json = "1"
 ```
 
-## Example
+```rust,no_run
+use futures::{SinkExt, StreamExt};
+use lsp_server_tokio::{Connection, Message, Response};
+
+# tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+let mut conn = Connection::stdio();
+let capabilities = serde_json::json!({
+    "documentFormattingProvider": true
+});
+
+let _client_params = conn.initialize(capabilities).await?;
+
+while let Some(result) = conn.receiver.next().await {
+    let msg = result?;
+
+    match msg {
+        Message::Request(req) if req.method == "shutdown" => {
+            conn.handle_shutdown(req.id).await?;
+        }
+        Message::Request(req) => {
+            let response = Message::Response(Response::ok(req.id, serde_json::Value::Null));
+            conn.sender.send(response).await?;
+        }
+        Message::Notification(notif) if notif.method == "exit" => {
+            break;
+        }
+        Message::Notification(_) | Message::Response(_) => {}
+    }
+}
+# Ok::<(), Box<dyn std::error::Error>>(()) });
+```
+
+See `examples/formatter_server.rs` for a fuller stdio server with typed `lsp-types` requests.
+
+## Features
+
+- Async-first connection management with `Connection::stdio()` and `Connection::new(io)`
+- Explicit message classification through `conn.route(msg)` and `IncomingMessage`
+- First-class request cancellation via re-exported `CancellationToken`
+- Transport-agnostic I/O over stdio, TCP, pipes, or custom streams
+- In-memory testing with `duplex_transport()`
+- Clean lifecycle helpers for initialize, shutdown, exit, and protocol errors
+- Minimal runtime dependencies with no `tower` requirement
+
+## Architecture
+
+The crate keeps transport, lifecycle, and routing separate. `Transport<T>` handles framed JSON-RPC messages, `Connection<T, I, O>` adds request tracking and lifecycle state, and `conn.route(msg)` classifies inbound messages while wiring responses and cancellation into the request queue.
+
+## Comparison
+
+| Crate | Async I/O | Server model | Cancellation | Testing story | Opinionation |
+| --- | --- | --- | --- | --- | --- |
+| `lsp-server-tokio` | Native Tokio | Explicit dispatch with `Connection` | `CancellationToken` per request | `duplex_transport()` and custom transports | Low |
+| `lsp-server` | Primarily sync | Minimal message loop | Manual | Custom harness required | Very low |
+| `tower-lsp` | Async | Trait-based framework on `tower` | Framework-managed | Good, but tied to framework | Higher |
+
+## Testing
+
+Use `duplex_transport()` to connect a client and server in memory without stdio:
 
 ```rust
 use futures::{SinkExt, StreamExt};
@@ -37,11 +89,11 @@ client
     .await
     .unwrap();
 
-if let Some(Ok(Message::Request(request))) = server.next().await {
+if let Some(Ok(Message::Request(req))) = server.next().await {
     server
         .send(Message::Response(Response::ok(
-            request.id,
-            serde_json::json!({"contents": "Hello from lsp-server-tokio"}),
+            req.id,
+            serde_json::json!({"contents": "Hello from tests"}),
         )))
         .await
         .unwrap();
