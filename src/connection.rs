@@ -1723,7 +1723,9 @@ mod tests {
         // Register a request via route
         let request = Request::new(42, "test", None);
         let result = conn.route(Message::Request(request));
-        let IncomingMessage::Request(_, token) = result else { panic!("Expected IncomingMessage::Request") };
+        let IncomingMessage::Request(_, token) = result else {
+            panic!("Expected IncomingMessage::Request")
+        };
         assert!(!token.is_cancelled());
 
         // Create cancel notification
@@ -1782,7 +1784,9 @@ mod tests {
         // Register a request via route
         let request = Request::new(1, "test", None);
         let result = conn.route(Message::Request(request));
-        let IncomingMessage::Request(_, token) = result else { panic!("Expected IncomingMessage::Request") };
+        let IncomingMessage::Request(_, token) = result else {
+            panic!("Expected IncomingMessage::Request")
+        };
 
         // Spawn a handler that waits for cancellation
         let handle = tokio::spawn(async move {
@@ -1811,7 +1815,9 @@ mod tests {
         let request = Request::new(42, "test", None);
         let result = conn.route(Message::Request(request));
 
-        let IncomingMessage::Request(_, token) = result else { panic!("Expected IncomingMessage::Request") };
+        let IncomingMessage::Request(_, token) = result else {
+            panic!("Expected IncomingMessage::Request")
+        };
 
         // Token should not be cancelled
         assert!(!token.is_cancelled());
