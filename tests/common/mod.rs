@@ -155,8 +155,7 @@ impl TestClient {
         // Wait for shutdown response
         let response = self.read_response().await?;
         if response.get("error").is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!("Shutdown failed: {:?}", response),
             ));
         }

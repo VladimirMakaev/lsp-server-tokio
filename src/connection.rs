@@ -729,7 +729,7 @@ where
             return Err(ProtocolError::Io(e));
         }
 
-        tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::time::timeout(Duration::from_mins(1), async {
             loop {
                 match self.receiver.next().await {
                     Some(Ok(Message::Notification(notif))) => {
@@ -1586,8 +1586,7 @@ mod tests {
         let result = conn.route(message);
         assert!(
             matches!(result, IncomingMessage::ResponseRouted),
-            "Expected ResponseRouted, got {:?}",
-            result
+            "Expected ResponseRouted, got {result:?}"
         );
 
         // Verify receiver got the response
@@ -1724,10 +1723,7 @@ mod tests {
         // Register a request via route
         let request = Request::new(42, "test", None);
         let result = conn.route(Message::Request(request));
-        let token = match result {
-            IncomingMessage::Request(_, token) => token,
-            _ => panic!("Expected IncomingMessage::Request"),
-        };
+        let IncomingMessage::Request(_, token) = result else { panic!("Expected IncomingMessage::Request") };
         assert!(!token.is_cancelled());
 
         // Create cancel notification
@@ -1786,10 +1782,7 @@ mod tests {
         // Register a request via route
         let request = Request::new(1, "test", None);
         let result = conn.route(Message::Request(request));
-        let token = match result {
-            IncomingMessage::Request(_, token) => token,
-            _ => panic!("Expected IncomingMessage::Request"),
-        };
+        let IncomingMessage::Request(_, token) = result else { panic!("Expected IncomingMessage::Request") };
 
         // Spawn a handler that waits for cancellation
         let handle = tokio::spawn(async move {
@@ -1818,10 +1811,7 @@ mod tests {
         let request = Request::new(42, "test", None);
         let result = conn.route(Message::Request(request));
 
-        let token = match result {
-            IncomingMessage::Request(_, token) => token,
-            _ => panic!("Expected IncomingMessage::Request"),
-        };
+        let IncomingMessage::Request(_, token) = result else { panic!("Expected IncomingMessage::Request") };
 
         // Token should not be cancelled
         assert!(!token.is_cancelled());

@@ -427,10 +427,10 @@ mod tests {
             .unwrap();
 
         // Content-Length should be BYTE count, not character count
-        assert_eq!(content_length, body.as_bytes().len());
+        assert_eq!(content_length, body.len());
 
         // Verify the body contains more bytes than characters due to UTF-8 encoding
-        assert!(body.as_bytes().len() > body.chars().count());
+        assert!(body.len() > body.chars().count());
     }
 
     #[test]
