@@ -685,7 +685,9 @@ where
     /// # Arguments
     ///
     /// * `id` - The request ID from [`initialize_start()`](Self::initialize_start)
-    /// * `server_capabilities` - The server's capabilities as JSON
+    /// * `initialize_result` - The full `InitializeResult` value as JSON, sent
+    ///   verbatim as the response result. Must include `capabilities` and may
+    ///   include `serverInfo` or any other fields defined by the LSP spec.
     ///
     /// # Errors
     ///
@@ -704,8 +706,11 @@ where
     /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
     ///
     /// let (id, _params) = conn.initialize_start().await.unwrap();
-    /// let capabilities = serde_json::json!({"textDocumentSync": 1});
-    /// conn.initialize_finish(id, capabilities).await.unwrap();
+    /// let result = serde_json::json!({
+    ///     "capabilities": {"textDocumentSync": 1},
+    ///     "serverInfo": {"name": "my-server", "version": "0.1.0"}
+    /// });
+    /// conn.initialize_finish(id, result).await.unwrap();
     ///
     /// assert!(conn.is_running());
     /// # });
@@ -713,18 +718,13 @@ where
     pub async fn initialize_finish(
         &mut self,
         id: crate::RequestId,
-        server_capabilities: serde_json::Value,
+        initialize_result: serde_json::Value,
     ) -> Result<(), ProtocolError> {
         use futures::SinkExt;
         use std::time::Duration;
 
-        // Build InitializeResult
-        let result = serde_json::json!({
-            "capabilities": server_capabilities
-        });
-
-        // Send the response
-        let response = Message::Response(crate::Response::ok(id, result));
+        // Send the response with the full InitializeResult verbatim
+        let response = Message::Response(crate::Response::ok(id, initialize_result));
         if let Err(e) = self.sender.send(response).await {
             return Err(ProtocolError::Io(e));
         }
@@ -772,9 +772,14 @@ where
     /// followed by [`initialize_finish()`](Self::initialize_finish).
     /// Returns the initialize params from the client.
     ///
+    /// Unlike [`initialize_finish()`](Self::initialize_finish) which takes a full
+    /// `InitializeResult`, this method takes just the server capabilities and
+    /// wraps them in `{"capabilities": ...}` automatically.
+    ///
     /// # Arguments
     ///
-    /// * `server_capabilities` - The server's capabilities as JSON
+    /// * `server_capabilities` - The server's capabilities as JSON (will be
+    ///   wrapped in `{"capabilities": server_capabilities}`)
     ///
     /// # Errors
     ///
@@ -800,7 +805,10 @@ where
         server_capabilities: serde_json::Value,
     ) -> Result<serde_json::Value, ProtocolError> {
         let (id, params) = self.initialize_start().await?;
-        self.initialize_finish(id, server_capabilities).await?;
+        let initialize_result = serde_json::json!({
+            "capabilities": server_capabilities
+        });
+        self.initialize_finish(id, initialize_result).await?;
         Ok(params)
     }
 
@@ -897,6 +905,97 @@ where
     #[must_use]
     pub fn is_shutting_down(&self) -> bool {
         self.lifecycle_state == LifecycleState::ShuttingDown
+    }
+
+    /// Sends a server-initiated request and waits for the client's response.
+    ///
+    /// This method sends a JSON-RPC request to the client and blocks until
+    /// either a matching response arrives or the timeout expires. Non-matching
+    /// messages received while waiting are discarded.
+    ///
+    /// This is useful for server→client requests like `client/registerCapability`,
+    /// `window/showMessageRequest`, or `workspace/applyEdit` that need to be
+    /// performed outside the main event loop (e.g., during initialization).
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The request ID to use
+    /// * `method` - The LSP method name (e.g., `"client/registerCapability"`)
+    /// * `params` - Optional request parameters as JSON
+    /// * `timeout` - Maximum time to wait for the response
+    ///
+    /// # Returns
+    ///
+    /// The client's [`Response`](crate::Response) on success.
+    ///
+    /// # Errors
+    ///
+    /// - [`ProtocolError::RequestTimeout`] if no matching response arrives within `timeout`
+    /// - [`ProtocolError::Disconnected`] if the connection is closed
+    /// - [`ProtocolError::Io`] if an I/O error occurs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use lsp_server_tokio::Connection;
+    /// use std::time::Duration;
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
+    ///
+    /// // Send a server→client request
+    /// let response = conn.send_request(
+    ///     1,
+    ///     "client/registerCapability",
+    ///     Some(serde_json::json!({"registrations": []})),
+    ///     Duration::from_secs(10),
+    /// ).await.unwrap();
+    ///
+    /// println!("Client responded: {:?}", response.result);
+    /// # });
+    /// ```
+    pub async fn send_request(
+        &mut self,
+        id: impl Into<crate::RequestId>,
+        method: impl Into<String>,
+        params: Option<serde_json::Value>,
+        timeout: std::time::Duration,
+    ) -> Result<crate::Response, ProtocolError> {
+        use futures::SinkExt;
+
+        let id = id.into();
+        let request = crate::Request::new(id.clone(), method, params);
+
+        // Send the request
+        if let Err(e) = self.sender.send(Message::Request(request)).await {
+            return Err(ProtocolError::Io(e));
+        }
+
+        // Wait for matching response, discarding non-matching messages
+        tokio::time::timeout(timeout, async {
+            loop {
+                match self.receiver.next().await {
+                    Some(Ok(Message::Response(resp))) => {
+                        if resp.id.as_ref() == Some(&id) {
+                            return Ok(resp);
+                        }
+                        // Non-matching response, discard
+                    }
+                    Some(Ok(_)) => {
+                        // Non-response message, discard
+                    }
+                    Some(Err(e)) => {
+                        return Err(ProtocolError::Io(e));
+                    }
+                    None => {
+                        return Err(ProtocolError::Disconnected);
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| ProtocolError::RequestTimeout)?
     }
 }
 
@@ -1260,8 +1359,8 @@ mod tests {
 
         // Spawn task to handle server's initialize_finish
         let server_task = tokio::spawn(async move {
-            let capabilities = json!({"textDocumentSync": 1});
-            server.initialize_finish(id, capabilities).await.unwrap();
+            let result = json!({"capabilities": {"textDocumentSync": 1}});
+            server.initialize_finish(id, result).await.unwrap();
             server
         });
 
@@ -1343,7 +1442,7 @@ mod tests {
         let (id, _params) = server.initialize_start().await.unwrap();
 
         let server_task =
-            tokio::spawn(async move { server.initialize_finish(id, json!({})).await });
+            tokio::spawn(async move { server.initialize_finish(id, json!({"capabilities": {}})).await });
 
         let response = client.receiver.next().await.unwrap().unwrap();
         assert!(response.is_response());
@@ -1402,7 +1501,7 @@ mod tests {
         let (id, _params) = server.initialize_start().await.unwrap();
 
         let server_task = tokio::spawn(async move {
-            server.initialize_finish(id, json!({})).await.unwrap();
+            server.initialize_finish(id, json!({"capabilities": {}})).await.unwrap();
             server
         });
 
@@ -1457,7 +1556,7 @@ mod tests {
         let (id, _params) = server.initialize_start().await.unwrap();
 
         let server_task = tokio::spawn(async move {
-            server.initialize_finish(id, json!({})).await.unwrap();
+            server.initialize_finish(id, json!({"capabilities": {}})).await.unwrap();
             server
         });
 
@@ -1487,7 +1586,7 @@ mod tests {
         let (id, _params) = server.initialize_start().await.unwrap();
 
         let server_task = tokio::spawn(async move {
-            server.initialize_finish(id, json!({})).await.unwrap();
+            server.initialize_finish(id, json!({"capabilities": {}})).await.unwrap();
             server
         });
 
@@ -1894,5 +1993,188 @@ mod tests {
         }
 
         assert!(rx.await.is_err());
+    }
+
+    // =========================================================================
+    // send_request Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_send_request_happy_path() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        // Server sends a request to the client
+        let server_task = tokio::spawn(async move {
+            server
+                .send_request(
+                    1,
+                    "client/registerCapability",
+                    Some(json!({"registrations": []})),
+                    Duration::from_secs(5),
+                )
+                .await
+        });
+
+        // Client receives the request and sends a response
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_request());
+        if let Message::Request(req) = msg {
+            assert_eq!(req.method, "client/registerCapability");
+            let response = Message::Response(Response::ok(req.id, json!(null)));
+            client.sender.send(response).await.unwrap();
+        }
+
+        // Server should get the response
+        let result = server_task.await.unwrap().unwrap();
+        assert_eq!(result.id, Some(1.into()));
+        assert_eq!(result.result, Some(json!(null)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_send_request_timeout() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+        let _client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        // Server sends a request but client never responds
+        let server_task = tokio::spawn(async move {
+            server
+                .send_request(1, "client/registerCapability", None, Duration::from_secs(5))
+                .await
+        });
+
+        // Advance time past the timeout
+        tokio::time::advance(Duration::from_secs(6)).await;
+
+        let result = server_task.await.unwrap();
+        assert!(matches!(result, Err(ProtocolError::RequestTimeout)));
+    }
+
+    #[tokio::test]
+    async fn test_send_request_disconnect() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+
+        // Drop the client immediately to simulate disconnect
+        drop(Connection::<_, (), ()>::new(client_stream));
+
+        let result = server
+            .send_request(1, "test", None, Duration::from_secs(5))
+            .await;
+        assert!(
+            matches!(result, Err(ProtocolError::Disconnected) | Err(ProtocolError::Io(_))),
+            "Expected Disconnected or Io error, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_request_discards_non_matching_messages() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        // Server sends a request
+        let server_task = tokio::spawn(async move {
+            server
+                .send_request(42, "test/method", None, Duration::from_secs(5))
+                .await
+        });
+
+        // Client receives the request
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_request());
+
+        // Client sends a notification first (should be discarded by send_request)
+        client
+            .sender
+            .send(Message::Notification(Notification::new(
+                "textDocument/didOpen",
+                None,
+            )))
+            .await
+            .unwrap();
+
+        // Client sends a response with wrong ID (should be discarded)
+        client
+            .sender
+            .send(Message::Response(Response::ok(999, json!("wrong"))))
+            .await
+            .unwrap();
+
+        // Client sends the correct response
+        client
+            .sender
+            .send(Message::Response(Response::ok(42, json!("correct"))))
+            .await
+            .unwrap();
+
+        // Server should get the correct response
+        let result = server_task.await.unwrap().unwrap();
+        assert_eq!(result.id, Some(42.into()));
+        assert_eq!(result.result, Some(json!("correct")));
+    }
+
+    #[tokio::test]
+    async fn test_send_request_with_error_response() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        let server_task = tokio::spawn(async move {
+            server
+                .send_request(1, "test", None, Duration::from_secs(5))
+                .await
+        });
+
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        if let Message::Request(req) = msg {
+            let error_resp = Message::Response(Response::err(
+                req.id,
+                crate::ResponseError::new(crate::ErrorCode::MethodNotFound, "Not supported"),
+            ));
+            client.sender.send(error_resp).await.unwrap();
+        }
+
+        let result = server_task.await.unwrap().unwrap();
+        assert_eq!(result.id, Some(1.into()));
+        assert!(result.error.is_some());
+        assert_eq!(
+            result.error.unwrap().code,
+            crate::ErrorCode::MethodNotFound as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_request_with_string_id() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), ()> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        let server_task = tokio::spawn(async move {
+            server
+                .send_request("req-abc", "test", None, Duration::from_secs(5))
+                .await
+        });
+
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        if let Message::Request(req) = msg {
+            assert_eq!(
+                req.id,
+                crate::RequestId::String("req-abc".to_string())
+            );
+            client
+                .sender
+                .send(Message::Response(Response::ok("req-abc", json!("ok"))))
+                .await
+                .unwrap();
+        }
+
+        let result = server_task.await.unwrap().unwrap();
+        assert_eq!(
+            result.id,
+            Some(crate::RequestId::String("req-abc".to_string()))
+        );
     }
 }
