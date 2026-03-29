@@ -1441,8 +1441,11 @@ mod tests {
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
-        let server_task =
-            tokio::spawn(async move { server.initialize_finish(id, json!({"capabilities": {}})).await });
+        let server_task = tokio::spawn(async move {
+            server
+                .initialize_finish(id, json!({"capabilities": {}}))
+                .await
+        });
 
         let response = client.receiver.next().await.unwrap().unwrap();
         assert!(response.is_response());
@@ -1501,7 +1504,10 @@ mod tests {
         let (id, _params) = server.initialize_start().await.unwrap();
 
         let server_task = tokio::spawn(async move {
-            server.initialize_finish(id, json!({"capabilities": {}})).await.unwrap();
+            server
+                .initialize_finish(id, json!({"capabilities": {}}))
+                .await
+                .unwrap();
             server
         });
 
@@ -1556,7 +1562,10 @@ mod tests {
         let (id, _params) = server.initialize_start().await.unwrap();
 
         let server_task = tokio::spawn(async move {
-            server.initialize_finish(id, json!({"capabilities": {}})).await.unwrap();
+            server
+                .initialize_finish(id, json!({"capabilities": {}}))
+                .await
+                .unwrap();
             server
         });
 
@@ -1586,7 +1595,10 @@ mod tests {
         let (id, _params) = server.initialize_start().await.unwrap();
 
         let server_task = tokio::spawn(async move {
-            server.initialize_finish(id, json!({"capabilities": {}})).await.unwrap();
+            server
+                .initialize_finish(id, json!({"capabilities": {}}))
+                .await
+                .unwrap();
             server
         });
 
@@ -2064,7 +2076,10 @@ mod tests {
             .send_request(1, "test", None, Duration::from_secs(5))
             .await;
         assert!(
-            matches!(result, Err(ProtocolError::Disconnected) | Err(ProtocolError::Io(_))),
+            matches!(
+                result,
+                Err(ProtocolError::Disconnected) | Err(ProtocolError::Io(_))
+            ),
             "Expected Disconnected or Io error, got: {result:?}"
         );
     }
@@ -2160,10 +2175,7 @@ mod tests {
 
         let msg = client.receiver.next().await.unwrap().unwrap();
         if let Message::Request(req) = msg {
-            assert_eq!(
-                req.id,
-                crate::RequestId::String("req-abc".to_string())
-            );
+            assert_eq!(req.id, crate::RequestId::String("req-abc".to_string()));
             client
                 .sender
                 .send(Message::Response(Response::ok("req-abc", json!("ok"))))
