@@ -326,7 +326,6 @@ where
     ///
     /// Panics if the sender has already been taken by [`Connection::client_sender()`]
     /// or [`Connection::into_sender()`].
-    #[must_use]
     pub fn sender(&mut self) -> &mut Sender<T> {
         self.sender
             .as_mut()
@@ -338,7 +337,6 @@ where
     /// # Panics
     ///
     /// Panics if the sender has already been taken by [`Connection::client_sender()`].
-    #[must_use]
     pub fn into_sender(self) -> Sender<T> {
         self.sender
             .expect("connection sender already taken; ClientSender owns outbound traffic")
@@ -548,9 +546,10 @@ where
     where
         T: Unpin + Send + 'static,
     {
-        if self.response_map.is_some() {
-            panic!("connection sender already taken; client_sender() can only be called once");
-        }
+        assert!(
+            self.response_map.is_none(),
+            "connection sender already taken; client_sender() can only be called once"
+        );
 
         let mut sender = self
             .sender
