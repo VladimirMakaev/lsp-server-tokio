@@ -212,6 +212,9 @@ where
     /// Cancellation token that is triggered when shutdown is requested.
     shutdown_token: CancellationToken,
 
+    /// Background outbound channel used after upgrading to [`ClientSender`].
+    outbound_tx: Option<mpsc::UnboundedSender<Message>>,
+
     /// Shared response routing state used by [`ClientSender`], if enabled.
     response_map: Option<ResponseMap>,
 }
@@ -269,6 +272,7 @@ where
             request_queue: RequestQueue::new(),
             lifecycle_state: LifecycleState::default(),
             shutdown_token: CancellationToken::new(),
+            outbound_tx: None,
             response_map: None,
         }
     }
@@ -311,6 +315,7 @@ where
             request_queue,
             lifecycle_state: LifecycleState::default(),
             shutdown_token: CancellationToken::new(),
+            outbound_tx: None,
             response_map: None,
         }
     }
@@ -385,6 +390,24 @@ where
     /// convenient for simple use cases.
     pub fn on_shutdown(&self) -> impl std::future::Future<Output = ()> + '_ {
         self.shutdown_token.cancelled()
+    }
+
+    async fn send_message(&mut self, message: Message) -> Result<(), io::Error>
+    where
+        T: Unpin,
+    {
+        if let Some(sender) = self.sender.as_mut() {
+            sender.send(message).await
+        } else if let Some(outbound_tx) = self.outbound_tx.as_ref() {
+            outbound_tx.send(message).map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "connection closed")
+            })
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "connection sender already taken",
+            ))
+        }
     }
 }
 
@@ -514,7 +537,7 @@ where
     /// Upgrades outbound communication to a cloneable [`ClientSender`].
     ///
     /// This consumes the underlying transport sink, spawns a background drain task,
-    /// and routes future responses through an internal [`ResponseMap`]. After this
+    /// and routes future responses through an internal response map. After this
     /// call, all outbound messages must go through the returned [`ClientSender`].
     ///
     /// # Panics
@@ -548,6 +571,7 @@ where
             response_map_task.cancel_all();
         });
 
+        self.outbound_tx = Some(tx.clone());
         self.response_map = Some(response_map.clone());
         ClientSender::new(tx, response_map)
     }
@@ -669,9 +693,7 @@ where
             crate::Notification::new(CANCEL_REQUEST_METHOD, Some(serde_json::json!({"id": id})));
 
         // Send the notification
-        self.sender()
-            .send(Message::Notification(notification))
-            .await?;
+        self.send_message(Message::Notification(notification)).await?;
 
         // Cancel in the queue (returns true if was pending)
         Ok(self.request_queue.outgoing.cancel(&id))
@@ -802,7 +824,7 @@ where
 
         // Send the response with the full InitializeResult verbatim
         let response = Message::Response(crate::Response::ok(id, initialize_result));
-        if let Err(e) = self.sender().send(response).await {
+        if let Err(e) = self.send_message(response).await {
             return Err(ProtocolError::Io(e));
         }
 
@@ -930,7 +952,7 @@ where
 
         // Send null response
         let response = Message::Response(crate::Response::ok(id, serde_json::Value::Null));
-        if let Err(e) = self.sender().send(response).await {
+        if let Err(e) = self.send_message(response).await {
             return Err(ProtocolError::Io(e));
         }
 

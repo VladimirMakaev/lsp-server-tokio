@@ -12,14 +12,13 @@ Add the crate to `Cargo.toml`:
 
 ```toml
 [dependencies]
-lsp-server-tokio = "0.1"
-futures = "0.3"
+lsp-server-tokio = "0.3"
 serde_json = "1"
 ```
 
 ```rust,no_run
-use futures::{SinkExt, StreamExt};
-use lsp_server_tokio::{Connection, Message, Response};
+use futures::StreamExt;
+use lsp_server_tokio::{Connection, IncomingMessage, Response};
 
 # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 let mut conn = Connection::stdio();
@@ -28,22 +27,24 @@ let capabilities = serde_json::json!({
 });
 
 let _client_params = conn.initialize(capabilities).await?;
+let sender = conn.client_sender();
 
 while let Some(result) = conn.receiver.next().await {
     let msg = result?;
 
-    match msg {
-        Message::Request(req) if req.method == "shutdown" => {
+    match conn.route(msg) {
+        IncomingMessage::Request(req, _) if req.method == "shutdown" => {
             conn.handle_shutdown(req.id).await?;
         }
-        Message::Request(req) => {
-            let response = Message::Response(Response::ok(req.id, serde_json::Value::Null));
-            conn.sender().send(response).await?;
+        IncomingMessage::Request(req, _) => {
+            let response = Response::ok(req.id, serde_json::Value::Null);
+            sender.respond(response)?;
         }
-        Message::Notification(notif) if notif.method == "exit" => {
+        IncomingMessage::Notification(notif) if notif.method == "exit" => {
             break;
         }
-        Message::Notification(_) | Message::Response(_) => {}
+        IncomingMessage::Notification(_) => {}
+        IncomingMessage::ResponseRouted | IncomingMessage::ResponseUnknown(_) => {}
     }
 }
 # Ok::<(), Box<dyn std::error::Error>>(()) });
@@ -54,12 +55,50 @@ See `examples/formatter_server.rs` for a fuller stdio server with typed `lsp-typ
 ## Features
 
 - Async-first connection management with `Connection::stdio()` and `Connection::new(io)`
+- Cloneable `ClientSender` for non-blocking server→client requests, responses, and notifications
 - Explicit message classification through `conn.route(msg)` and `IncomingMessage`
 - First-class request cancellation via re-exported `CancellationToken`
 - Transport-agnostic I/O over stdio, TCP, pipes, or custom streams
 - In-memory testing with `duplex_transport()`
 - Clean lifecycle helpers for initialize, shutdown, exit, and protocol errors
 - Minimal runtime dependencies with no `tower` requirement
+
+## Server→Client Communication
+
+After initialization, call `conn.client_sender()` to upgrade outbound traffic to a cloneable `ClientSender`. This lets spawned tasks notify the client without holding `&mut Connection`.
+
+```rust,no_run
+use lsp_server_tokio::{ClientSender, Connection};
+use lsp_types::{LogMessageParams, MessageType};
+
+fn log_message(sender: &ClientSender, message: impl Into<String>) {
+    let params = LogMessageParams {
+        typ: MessageType::INFO,
+        message: message.into(),
+    };
+
+    sender
+        .notify("window/logMessage", Some(serde_json::to_value(params).unwrap()))
+        .ok();
+}
+
+# tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+let mut conn = Connection::stdio();
+let capabilities = serde_json::json!({});
+let _ = conn.initialize(capabilities).await?;
+
+let sender = conn.client_sender();
+let background_sender = sender.clone();
+
+tokio::spawn(async move {
+    log_message(&background_sender, "background indexing started");
+});
+
+log_message(&sender, "server ready");
+# Ok::<(), Box<dyn std::error::Error>>(()) });
+```
+
+Use `ClientSender::respond()` for request handlers and `ClientSender::request()` when the server needs to initiate its own JSON-RPC requests to the client.
 
 ## Architecture
 
