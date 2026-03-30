@@ -27,8 +27,8 @@ impl ResponseMap {
     ) -> std::sync::MutexGuard<'_, HashMap<RequestId, oneshot::Sender<Response>>> {
         match self.pending.lock() {
             Ok(pending) => pending,
-            Err(_) => panic!(
-                "response map lock poisoned during {operation}; expected healthy routing state, received poisoned mutex"
+            Err(poisoned) => panic!(
+                "response map lock poisoned during {operation}; expected healthy routing state, received poisoned mutex: {poisoned}"
             ),
         }
     }
@@ -119,6 +119,10 @@ impl ClientSender {
     }
 
     /// Queues a notification for delivery to the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] if the connection has been closed.
     pub fn notify(
         &self,
         method: &str,
@@ -131,11 +135,20 @@ impl ClientSender {
     }
 
     /// Queues a response for delivery to the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError`] if the connection has been closed.
     pub fn respond(&self, response: Response) -> Result<(), SendError> {
         self.tx.send(Message::Response(response)).map_err(|_| SendError)
     }
 
     /// Sends a request with an auto-generated ID and waits for the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError::Disconnected`] if the connection is closed before
+    /// a response arrives.
     pub async fn request(
         &self,
         method: &str,
@@ -146,6 +159,11 @@ impl ClientSender {
     }
 
     /// Sends a request and returns a timeout error if no response arrives in time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError::RequestTimeout`] if the timeout elapses, or
+    /// [`ProtocolError::Disconnected`] if the connection is closed.
     pub async fn request_timeout(
         &self,
         method: &str,
@@ -175,8 +193,8 @@ impl ClientSender {
 
         match i32::try_from(id) {
             Ok(id) => RequestId::Integer(id),
-            Err(_) => panic!(
-                "generated request id out of range; expected i32-compatible counter, received {id}"
+            Err(out_of_range) => panic!(
+                "generated request id out of range; expected i32-compatible counter, received {out_of_range}"
             ),
         }
     }

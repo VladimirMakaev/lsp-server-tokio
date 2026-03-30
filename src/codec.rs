@@ -103,14 +103,11 @@ impl Decoder for LspCodec {
         }
 
         // Now we have content length, check if body is complete
-        let content_length = match self.content_length {
-            Some(content_length) => content_length,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "missing Content-Length state: expected parsed headers before body, received empty decoder state",
-                ));
-            }
+        let Some(content_length) = self.content_length else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing Content-Length state: expected parsed headers before body, received empty decoder state",
+            ));
         };
         if src.len() < content_length {
             return Ok(None); // Need more data
