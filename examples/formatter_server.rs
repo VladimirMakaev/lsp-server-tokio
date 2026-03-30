@@ -117,7 +117,7 @@ async fn main() {
 
                 // Token is now automatically provided by route()
                 let response = handle_request(&mut conn, &mut state, &req, token).await;
-                if let Err(e) = conn.sender.send(Message::Response(response)).await {
+                if let Err(e) = conn.sender().send(Message::Response(response)).await {
                     eprintln!("Error sending response: {:?}", e);
                     break;
                 }
@@ -417,7 +417,7 @@ async fn log_message<T>(
         Some(serde_json::to_value(params).unwrap()),
     );
     // Ignore errors - logging is best-effort
-    let _ = conn.sender.send(Message::Notification(notif)).await;
+    let _ = conn.sender().send(Message::Notification(notif)).await;
 }
 
 #[cfg(test)]
