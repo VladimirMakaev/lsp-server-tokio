@@ -63,6 +63,7 @@
 //! - [`IncomingMessage::ResponseUnknown`] - A response for an unknown request ID
 
 pub mod codec;
+pub mod client_sender;
 pub mod connection;
 pub mod error;
 pub mod lifecycle;
@@ -73,6 +74,7 @@ pub mod routing;
 pub mod transport;
 
 pub use codec::LspCodec;
+pub use client_sender::{ClientSender, SendError};
 pub use connection::{Connection, Receiver, Sender, StdioConnection};
 pub use error::{ErrorCode, ResponseError};
 pub use lifecycle::{ExitCode, LifecycleState, ProtocolError};

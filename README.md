@@ -38,7 +38,7 @@ while let Some(result) = conn.receiver.next().await {
         }
         Message::Request(req) => {
             let response = Message::Response(Response::ok(req.id, serde_json::Value::Null));
-            conn.sender.send(response).await?;
+            conn.sender().send(response).await?;
         }
         Message::Notification(notif) if notif.method == "exit" => {
             break;
