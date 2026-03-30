@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-03-30
+
+### Added
+- `ClientSender` for cloneable, non-blocking server→client communication
+- `Connection::client_sender()` to create a `ClientSender` handle from an initialized connection
+
+### Changed
+- `Connection.sender` access now goes through the `Connection::sender()` method
+
+### Deprecated
+- `Connection::send_request()` in favor of `ClientSender::request()`
+
 ## [0.1.0] - 2026-03-23
 
 ### Added

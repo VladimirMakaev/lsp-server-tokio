@@ -22,9 +22,9 @@
 
 use std::collections::HashMap;
 
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use lsp_server_tokio::{
-    cancelled_response, method_not_found_response, Connection, IncomingMessage, Message,
+    cancelled_response, method_not_found_response, ClientSender, Connection, IncomingMessage,
     Notification, Response,
 };
 use lsp_types::{
@@ -64,37 +64,45 @@ async fn main() {
         Connection::new(lsp_server_tokio::connection::StdioTransport::new());
 
     // Perform LSP initialization handshake
-    let capabilities = server_capabilities();
-    match conn
-        .initialize(serde_json::to_value(capabilities).unwrap())
-        .await
-    {
+    let capabilities = match serde_json::to_value(server_capabilities()) {
+        Ok(capabilities) => capabilities,
+        Err(err) => {
+            eprintln!(
+                "Failed to serialize server capabilities: expected JSON value, received serialization error: {err}"
+            );
+            return;
+        }
+    };
+
+    match conn.initialize(capabilities).await {
         Ok(params) => {
+            let sender = conn.client_sender();
+
             // Parse client's initialize params to understand client capabilities
             if let Ok(init_params) = serde_json::from_value::<InitializeParams>(params) {
                 log_message(
-                    &mut conn,
+                    &sender,
                     MessageType::INFO,
                     format!("Client initialized: {:?}", init_params.client_info),
-                )
-                .await;
+                );
             }
+
+            run_server(conn, sender).await;
         }
         Err(e) => {
             eprintln!("Initialization failed: {:?}", e);
-            return;
         }
     }
+}
 
+async fn run_server<T>(mut conn: Connection<T, String, Response>, sender: ClientSender)
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     // Initialize server state
     let mut state = ServerState::new();
 
-    log_message(
-        &mut conn,
-        MessageType::INFO,
-        "Formatter server ready".to_string(),
-    )
-    .await;
+    log_message(&sender, MessageType::INFO, "Formatter server ready".to_string());
 
     // Main message loop
     while let Some(result) = conn.receiver.next().await {
@@ -116,8 +124,8 @@ async fn main() {
                 }
 
                 // Token is now automatically provided by route()
-                let response = handle_request(&mut conn, &mut state, &req, token).await;
-                if let Err(e) = conn.sender().send(Message::Response(response)).await {
+                let response = handle_request(&sender, &mut state, &req, token).await;
+                if let Err(e) = sender.respond(response) {
                     eprintln!("Error sending response: {:?}", e);
                     break;
                 }
@@ -166,15 +174,12 @@ fn server_capabilities() -> ServerCapabilities {
 }
 
 /// Handles an incoming request and returns a response.
-async fn handle_request<T>(
-    conn: &mut Connection<T, String, Response>,
+async fn handle_request(
+    sender: &ClientSender,
     state: &mut ServerState,
     req: &lsp_server_tokio::Request,
     token: CancellationToken,
-) -> Response
-where
-    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
+) -> Response {
     match req.method.as_str() {
         "textDocument/formatting" => {
             // Parse the formatting params
@@ -196,8 +201,19 @@ where
             };
 
             // Format the document with cancellation support
-            match format_document(conn, state, &params, token).await {
-                Ok(edits) => Response::ok(req.id.clone(), serde_json::to_value(edits).unwrap()),
+            match format_document(sender, state, &params, token).await {
+                Ok(edits) => match serde_json::to_value(edits) {
+                    Ok(edits) => Response::ok(req.id.clone(), edits),
+                    Err(err) => Response::err(
+                        req.id.clone(),
+                        lsp_server_tokio::ResponseError::new(
+                            lsp_server_tokio::ErrorCode::InternalError,
+                            format!(
+                                "Failed to serialize formatting edits: expected JSON value, received serialization error: {err}"
+                            ),
+                        ),
+                    ),
+                },
                 Err(FormatError::Cancelled) => cancelled_response(req.id.clone()),
                 Err(FormatError::DocumentNotFound) => Response::err(
                     req.id.clone(),
@@ -223,15 +239,12 @@ enum FormatError {
 /// Formats a document by capitalizing all text.
 ///
 /// Includes a 200ms delay to demonstrate cancellation handling.
-async fn format_document<T>(
-    conn: &mut Connection<T, String, Response>,
+async fn format_document(
+    sender: &ClientSender,
     state: &ServerState,
     params: &DocumentFormattingParams,
     token: CancellationToken,
-) -> Result<Vec<TextEdit>, FormatError>
-where
-    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
+) -> Result<Vec<TextEdit>, FormatError> {
     let uri = &params.text_document.uri;
 
     // Get the document content
@@ -240,19 +253,14 @@ where
         .get(uri)
         .ok_or(FormatError::DocumentNotFound)?;
 
-    log_message(
-        conn,
-        MessageType::LOG,
-        format!("Formatting document: {:?}", uri),
-    )
-    .await;
+    log_message(sender, MessageType::LOG, format!("Formatting document: {:?}", uri));
 
     // Simulate a long-running operation (200ms delay)
     // This allows cancellation to be tested
     tokio::select! {
         _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
         _ = token.cancelled() => {
-            log_message(conn, MessageType::LOG, "Formatting cancelled".to_string()).await;
+            log_message(sender, MessageType::LOG, "Formatting cancelled".to_string());
             return Err(FormatError::Cancelled);
         }
     }
@@ -266,11 +274,10 @@ where
     let edits = create_uppercase_edit(&doc.content);
 
     log_message(
-        conn,
+        sender,
         MessageType::LOG,
         format!("Formatting complete: {} edits", edits.len()),
-    )
-    .await;
+    );
 
     Ok(edits)
 }
@@ -281,22 +288,12 @@ fn create_uppercase_edit(content: &str) -> Vec<TextEdit> {
         return vec![];
     }
 
-    // Calculate the range covering the entire document
-    // Note: This implementation assumes ASCII content for simplicity.
-    // A production server would need proper Unicode handling.
-    let lines: Vec<&str> = content.lines().collect();
-    let last_line = lines.len().saturating_sub(1);
-    let last_char = lines.last().map(|l| l.len()).unwrap_or(0);
-
     let range = Range {
         start: Position {
             line: 0,
             character: 0,
         },
-        end: Position {
-            line: last_line as u32,
-            character: last_char as u32,
-        },
+        end: end_position_utf16(content),
     };
 
     vec![TextEdit {
@@ -386,38 +383,117 @@ fn apply_incremental_changes(
     }
 }
 
-/// Converts a Position (line, character) to a byte offset.
-///
-/// Note: This implementation assumes ASCII content for simplicity.
-/// Character positions in LSP are UTF-16 code units, but for ASCII
-/// text this is equivalent to byte offsets.
 fn position_to_offset(content: &str, pos: Position) -> usize {
-    let mut offset = 0;
-    for (line_idx, line) in content.lines().enumerate() {
-        if line_idx == pos.line as usize {
-            return offset + (pos.character as usize).min(line.len());
-        }
-        offset += line.len() + 1; // +1 for newline
+    let line_start = line_start_offset(content, pos.line);
+    if line_start >= content.len() {
+        return content.len();
     }
-    // If position is beyond content, return end of content
-    content.len()
+
+    let mut offset = line_start;
+    let mut utf16_units = 0u32;
+
+    for ch in content[line_start..].chars() {
+        if matches!(ch, '\n' | '\r') {
+            break;
+        }
+
+        let next_units = utf16_units + ch.len_utf16() as u32;
+        if next_units > pos.character {
+            break;
+        }
+
+        utf16_units = next_units;
+        offset += ch.len_utf8();
+    }
+
+    offset
+}
+
+fn line_start_offset(content: &str, target_line: u32) -> usize {
+    let bytes = content.as_bytes();
+    let mut offset = 0;
+    let mut current_line = 0;
+
+    while offset < bytes.len() && current_line < target_line {
+        match bytes[offset] {
+            b'\n' => {
+                offset += 1;
+                current_line += 1;
+            }
+            b'\r' => {
+                offset += 1;
+                if offset < bytes.len() && bytes[offset] == b'\n' {
+                    offset += 1;
+                }
+                current_line += 1;
+            }
+            _ => {
+                offset += content[offset..]
+                    .chars()
+                    .next()
+                    .map_or(1, |ch| ch.len_utf8());
+            }
+        }
+    }
+
+    if current_line == target_line {
+        offset
+    } else {
+        content.len()
+    }
+}
+
+fn end_position_utf16(content: &str) -> Position {
+    let bytes = content.as_bytes();
+    let mut offset = 0;
+    let mut position = Position {
+        line: 0,
+        character: 0,
+    };
+
+    while offset < bytes.len() {
+        match bytes[offset] {
+            b'\n' => {
+                offset += 1;
+                position.line += 1;
+                position.character = 0;
+            }
+            b'\r' => {
+                offset += 1;
+                if offset < bytes.len() && bytes[offset] == b'\n' {
+                    offset += 1;
+                }
+                position.line += 1;
+                position.character = 0;
+            }
+            _ => {
+                let ch = match content[offset..].chars().next() {
+                    Some(ch) => ch,
+                    None => break,
+                };
+                position.character += ch.len_utf16() as u32;
+                offset += ch.len_utf8();
+            }
+        }
+    }
+
+    position
 }
 
 /// Sends a window/logMessage notification to the client.
-async fn log_message<T>(
-    conn: &mut Connection<T, String, Response>,
-    typ: MessageType,
-    message: String,
-) where
-    T: tokio::io::AsyncRead + tokio::io::AsyncWrite,
-{
+fn log_message(sender: &ClientSender, typ: MessageType, message: String) {
     let params = LogMessageParams { typ, message };
-    let notif = Notification::new(
-        "window/logMessage",
-        Some(serde_json::to_value(params).unwrap()),
-    );
     // Ignore errors - logging is best-effort
-    let _ = conn.sender().send(Message::Notification(notif)).await;
+    let value = match serde_json::to_value(params) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!(
+                "Failed to serialize log message params: expected JSON value, received serialization error: {err}"
+            );
+            return;
+        }
+    };
+    let _ = sender.notify("window/logMessage", Some(value));
 }
 
 #[cfg(test)]
