@@ -59,6 +59,7 @@
 //! The [`IncomingMessage`] enum classifies messages received from [`Connection::route()`]:
 //! - [`IncomingMessage::Request`] - A request with automatic [`CancellationToken`] for cooperative cancellation
 //! - [`IncomingMessage::Notification`] - A notification (no response expected)
+//! - [`IncomingMessage::CancelHandled`] - A `$/cancelRequest` notification already applied by `route()`
 //! - [`IncomingMessage::ResponseRouted`] - A response delivered to an awaiting receiver
 //! - [`IncomingMessage::ResponseUnknown`] - A response for an unknown request ID
 

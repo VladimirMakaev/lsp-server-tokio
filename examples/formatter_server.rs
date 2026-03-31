@@ -144,14 +144,10 @@ where
                     std::process::exit(exit_code as i32);
                 }
 
-                // Handle cancel requests
-                if conn.handle_cancel_request(&notif).is_some() {
-                    continue;
-                }
-
                 // Handle other notifications
                 handle_notification(&mut state, &notif);
             }
+            IncomingMessage::CancelHandled => {}
             IncomingMessage::ResponseRouted => {
                 // Response was delivered to awaiting receiver
             }

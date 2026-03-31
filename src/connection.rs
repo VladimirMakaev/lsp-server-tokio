@@ -436,6 +436,7 @@ where
     ///
     /// - [`IncomingMessage::Request`](crate::IncomingMessage::Request) - Handle the request and send a response
     /// - [`IncomingMessage::Notification`](crate::IncomingMessage::Notification) - Handle the notification
+    /// - [`IncomingMessage::CancelHandled`](crate::IncomingMessage::CancelHandled) - `$/cancelRequest` was applied automatically
     /// - [`IncomingMessage::ResponseRouted`](crate::IncomingMessage::ResponseRouted) - Response was delivered to awaiting receiver
     /// - [`IncomingMessage::ResponseUnknown`](crate::IncomingMessage::ResponseUnknown) - No pending request for this response ID
     ///
@@ -461,6 +462,9 @@ where
     ///             // Handle notification
     ///             println!("Notification: {}", notif.method);
     ///         }
+    ///         IncomingMessage::CancelHandled => {
+    ///             // `$/cancelRequest` was handled by route()
+    ///         }
     ///         IncomingMessage::ResponseRouted => {
     ///             // Response delivered to awaiting task
     ///         }
@@ -481,7 +485,16 @@ where
                     .register(req.id.clone(), I::default(), token.clone());
                 crate::IncomingMessage::Request(req, token)
             }
-            Message::Notification(notif) => crate::IncomingMessage::Notification(notif),
+            Message::Notification(notif) => {
+                if notif.method == crate::request_queue::CANCEL_REQUEST_METHOD {
+                    if let Some(id) = crate::parse_cancel_params(&notif.params) {
+                        self.request_queue.incoming.cancel(&id);
+                    }
+                    crate::IncomingMessage::CancelHandled
+                } else {
+                    crate::IncomingMessage::Notification(notif)
+                }
+            }
             Message::Response(resp) => {
                 if let Some(id) = resp.id.clone() {
                     if self
@@ -512,7 +525,8 @@ where
     /// Cancels an incoming request by request ID.
     ///
     /// This is a convenience method that cancels the [`CancellationToken`] for a registered
-    /// incoming request. Use this when you receive a `$/cancelRequest` notification.
+    /// incoming request. Use this for manual cancellation flows outside of
+    /// [`route()`](Self::route), which already auto-handles `$/cancelRequest` notifications.
     ///
     /// # Arguments
     ///
@@ -587,6 +601,9 @@ where
     /// and cancels the corresponding request's token. If the request is not pending
     /// (already completed or never registered), this is a no-op.
     ///
+    /// Deprecated: [`route()`](Self::route) now performs this automatically for
+    /// routed notifications.
+    ///
     /// # Arguments
     ///
     /// * `notification` - The notification to check
@@ -620,6 +637,7 @@ where
     /// assert_eq!(result, Some(true));
     /// # });
     /// ```
+    #[deprecated(note = "route() now handles $/cancelRequest automatically")]
     pub fn handle_cancel_request(&mut self, notification: &crate::Notification) -> Option<bool> {
         use crate::request_queue::{parse_cancel_params, CANCEL_REQUEST_METHOD};
 
@@ -1791,6 +1809,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn route_cancel_request_returns_cancel_handled_and_cancels_pending() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, ()> = Connection::new(stream);
+
+        let request = Request::new(42, "test", None);
+        let routed = conn.route(Message::Request(request));
+        let IncomingMessage::Request(_, token) = routed else {
+            panic!("Expected IncomingMessage::Request")
+        };
+        assert!(!token.is_cancelled());
+
+        let cancel = Message::Notification(Notification::new(
+            "$/cancelRequest",
+            Some(json!({"id": 42})),
+        ));
+
+        let result = conn.route(cancel);
+        assert!(matches!(result, IncomingMessage::CancelHandled));
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn route_cancel_request_unknown_id_returns_cancel_handled() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, ()> = Connection::new(stream);
+
+        let cancel = Message::Notification(Notification::new(
+            "$/cancelRequest",
+            Some(json!({"id": 999})),
+        ));
+
+        let result = conn.route(cancel);
+        assert!(matches!(result, IncomingMessage::CancelHandled));
+    }
+
+    #[test]
+    fn route_cancel_request_malformed_params_returns_cancel_handled() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, ()> = Connection::new(stream);
+
+        let cancel = Message::Notification(Notification::new(
+            "$/cancelRequest",
+            Some(json!({"other": "field"})),
+        ));
+
+        let result = conn.route(cancel);
+        assert!(matches!(result, IncomingMessage::CancelHandled));
+    }
+
     #[tokio::test]
     async fn route_response_to_pending_outgoing_request() {
         let (stream, _) = tokio::io::duplex(4096);
@@ -1937,6 +2005,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[allow(deprecated)]
     fn handle_cancel_request_cancels_pending() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, ()> = Connection::new(stream);
@@ -1961,6 +2030,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn handle_cancel_request_unknown_id_returns_false() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, String> = Connection::new(stream);
@@ -1972,6 +2042,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn handle_cancel_request_wrong_method_returns_none() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, String> = Connection::new(stream);
@@ -1986,6 +2057,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn handle_cancel_request_malformed_params_returns_none() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, String> = Connection::new(stream);

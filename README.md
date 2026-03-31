@@ -43,6 +43,7 @@ while let Some(result) = conn.receiver.next().await {
         IncomingMessage::Notification(notif) if notif.method == "exit" => {
             break;
         }
+        IncomingMessage::CancelHandled => {}
         IncomingMessage::Notification(_) => {}
         IncomingMessage::ResponseRouted | IncomingMessage::ResponseUnknown(_) => {}
     }

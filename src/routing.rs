@@ -9,7 +9,8 @@
 //!
 //! 1. **Message Classification**: The [`IncomingMessage`] enum categorizes received
 //!    messages into requests that need responses, notifications that are fire-and-forget,
-//!    or responses that were either routed to pending requests or are unknown.
+//!    automatically handled cancellation notifications, or responses that were either
+//!    routed to pending requests or are unknown.
 //!
 //! 2. **Response Routing**: When the server sends requests to the client, responses
 //!    are automatically routed to the waiting receivers via oneshot channels.
@@ -25,6 +26,9 @@
 //!
 //! let notif = Message::Notification(Notification::new("initialized", None));
 //! // After calling route(), you get IncomingMessage::Notification(notif)
+//!
+//! let cancel = Message::Notification(Notification::new("$/cancelRequest", None));
+//! // After calling route(), you get IncomingMessage::CancelHandled
 //! ```
 
 use tokio_util::sync::CancellationToken;
@@ -43,6 +47,8 @@ use crate::message::{Notification, Request, Response};
 ///   a [`CancellationToken`] that is triggered on `$/cancelRequest` or shutdown.
 /// - [`Notification`](IncomingMessage::Notification): A fire-and-forget notification.
 ///   No response is expected.
+/// - [`CancelHandled`](IncomingMessage::CancelHandled): A `$/cancelRequest`
+///   notification that was automatically processed by [`Connection::route()`](crate::Connection::route).
 /// - [`ResponseRouted`](IncomingMessage::ResponseRouted): A response that was successfully
 ///   delivered to a pending outgoing request's receiver.
 /// - [`ResponseUnknown`](IncomingMessage::ResponseUnknown): A response for which no pending
@@ -62,6 +68,9 @@ use crate::message::{Notification, Request, Response};
 ///         }
 ///         IncomingMessage::Notification(notif) => {
 ///             println!("Handle notification: {}", notif.method);
+///         }
+///         IncomingMessage::CancelHandled => {
+///             // `$/cancelRequest` was applied automatically
 ///         }
 ///         IncomingMessage::ResponseRouted => {
 ///             // Response was delivered to awaiting task, nothing to do
@@ -89,6 +98,9 @@ pub enum IncomingMessage {
     ///
     /// No response is expected or allowed.
     Notification(Notification),
+
+    /// A `$/cancelRequest` notification that was automatically processed.
+    CancelHandled,
 
     /// A response that was successfully delivered to a pending outgoing request.
     ///
@@ -233,6 +245,7 @@ mod tests {
 
         let _req = IncomingMessage::Request(request, token);
         let _notif = IncomingMessage::Notification(notification);
+        let _cancelled = IncomingMessage::CancelHandled;
         let _routed = IncomingMessage::ResponseRouted;
         let _unknown = IncomingMessage::ResponseUnknown(response);
     }
@@ -246,6 +259,9 @@ mod tests {
         let incoming = IncomingMessage::Request(request, token);
         let debug_str = format!("{incoming:?}");
         assert!(debug_str.contains("Request"));
+
+        let cancel_debug = format!("{:?}", IncomingMessage::CancelHandled);
+        assert!(cancel_debug.contains("CancelHandled"));
     }
 
     // ============== cancelled_response Tests ==============
