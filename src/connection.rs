@@ -2297,4 +2297,200 @@ mod tests {
             Some(crate::RequestId::String("req-abc".to_string()))
         );
     }
+
+    // =========================================================================
+    // ClientSender Integration Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn client_sender_messages_arrive_on_receiver() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        let sender = server.client_sender();
+
+        // Notification via ClientSender should arrive on client's receiver
+        sender
+            .notify(
+                "window/logMessage",
+                Some(json!({"type": 3, "message": "hello"})),
+            )
+            .unwrap();
+
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_notification());
+        if let Message::Notification(notif) = msg {
+            assert_eq!(notif.method, "window/logMessage");
+            assert_eq!(notif.params.unwrap()["message"], "hello");
+        }
+    }
+
+    #[tokio::test]
+    async fn client_sender_request_routed_through_response_map() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        let sender = server.client_sender();
+
+        // Spawn request task
+        let sender_clone = sender.clone();
+        let req_task = tokio::spawn(async move {
+            sender_clone
+                .request(
+                    "client/registerCapability",
+                    Some(json!({"registrations": []})),
+                )
+                .await
+        });
+
+        // Client receives the request
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        let req_id = if let Message::Request(req) = msg {
+            assert_eq!(req.method, "client/registerCapability");
+            req.id.clone()
+        } else {
+            panic!("Expected Request");
+        };
+
+        // Client sends response back
+        client
+            .sender()
+            .send(Message::Response(Response::ok(req_id.clone(), json!(null))))
+            .await
+            .unwrap();
+
+        // Server reads the response and routes it through response_map
+        let resp_msg = server.receiver.next().await.unwrap().unwrap();
+        let routed = server.route(resp_msg);
+        assert!(
+            matches!(routed, IncomingMessage::ResponseRouted),
+            "Expected ResponseRouted, got {routed:?}"
+        );
+
+        // The request task should complete with the response
+        let result = tokio::time::timeout(Duration::from_secs(1), req_task)
+            .await
+            .expect("request should complete")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.id, Some(req_id));
+    }
+
+    #[tokio::test]
+    async fn route_prefers_response_map_over_outgoing_queue() {
+        let (client_stream, _server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), Response> = Connection::new(client_stream);
+
+        let sender = server.client_sender();
+
+        // Register the same ID in both response_map (via ClientSender) and outgoing queue
+        let mut outgoing_rx = server.request_queue.outgoing.register(1.into());
+
+        let sender_clone = sender.clone();
+        let req_task = tokio::spawn(async move { sender_clone.request("test", None).await });
+
+        // Give the request task time to register in the response_map
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        // Route a response for id=1 — should go to response_map, not outgoing queue
+        let response = Response::ok(1, json!("via-response-map"));
+        let result = server.route(Message::Response(response));
+        assert!(matches!(result, IncomingMessage::ResponseRouted));
+
+        // The request task should get the response
+        let resp = tokio::time::timeout(Duration::from_secs(1), req_task)
+            .await
+            .expect("should complete")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp.result, Some(json!("via-response-map")));
+
+        // outgoing queue receiver should NOT have received anything (still pending)
+        assert!(outgoing_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn send_message_routes_through_outbound_tx_after_client_sender() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        // Before client_sender: sender field is Some
+        assert!(server.sender.is_some());
+
+        let _sender = server.client_sender();
+
+        // After client_sender: sender is None, outbound_tx is Some
+        assert!(server.sender.is_none());
+        assert!(server.outbound_tx.is_some());
+
+        // send_message should still work (routes through outbound_tx)
+        server
+            .send_message(Message::Notification(Notification::new("test/ping", None)))
+            .await
+            .unwrap();
+
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_notification());
+        if let Message::Notification(notif) = msg {
+            assert_eq!(notif.method, "test/ping");
+        }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "connection sender already taken")]
+    async fn client_sender_panics_on_second_call() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        let _sender1 = conn.client_sender();
+        let _sender2 = conn.client_sender(); // should panic
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "connection sender already taken")]
+    async fn sender_panics_after_client_sender() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        let _sender = conn.client_sender();
+        let _ = conn.sender(); // should panic — sender was taken
+    }
+
+    #[tokio::test]
+    async fn into_sender_works_before_client_sender() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let conn: Connection<_, (), Response> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        let mut sender = conn.into_sender();
+        sender
+            .send(Message::Notification(Notification::new("test/hello", None)))
+            .await
+            .unwrap();
+
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_notification());
+    }
+
+    #[tokio::test]
+    async fn deprecated_send_request_errors_after_client_sender() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        let _sender = conn.client_sender();
+
+        // send_request should fail because sender was taken
+        #[allow(deprecated)]
+        let result = conn
+            .send_request(1, "test", None, Duration::from_secs(1))
+            .await;
+        assert!(
+            matches!(result, Err(ProtocolError::Disconnected)),
+            "Expected Disconnected after client_sender(), got: {result:?}"
+        );
+    }
 }
