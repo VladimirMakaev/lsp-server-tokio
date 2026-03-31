@@ -186,7 +186,10 @@ async fn test_format_document_preserves_trailing_newline_range() {
 
     let uri = "file:///tmp/trailing-newline.txt";
     client
-        .send_notification("textDocument/didOpen", create_did_open_params(uri, "hello\n"))
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri, "hello\n"),
+        )
         .await
         .expect("didOpen failed");
 
@@ -203,9 +206,24 @@ async fn test_format_document_preserves_trailing_newline_range() {
     assert_eq!(edits.len(), 1, "Expected a single whole-document edit");
 
     let range = edits[0].get("range").expect("Missing range");
-    assert_eq!(edits[0].get("newText").and_then(|v| v.as_str()), Some("HELLO\n"));
-    assert_eq!(range.get("end").and_then(|v| v.get("line")).and_then(|v| v.as_u64()), Some(1));
-    assert_eq!(range.get("end").and_then(|v| v.get("character")).and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("HELLO\n")
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("line"))
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("character"))
+            .and_then(|v| v.as_u64()),
+        Some(0)
+    );
 
     client.shutdown().await.expect("Shutdown failed");
 }
@@ -236,9 +254,24 @@ async fn test_format_document_unicode_range_uses_utf16_units() {
     assert_eq!(edits.len(), 1, "Expected a single whole-document edit");
 
     let range = edits[0].get("range").expect("Missing range");
-    assert_eq!(edits[0].get("newText").and_then(|v| v.as_str()), Some("🙂X"));
-    assert_eq!(range.get("end").and_then(|v| v.get("line")).and_then(|v| v.as_u64()), Some(0));
-    assert_eq!(range.get("end").and_then(|v| v.get("character")).and_then(|v| v.as_u64()), Some(3));
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("🙂X")
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("line"))
+            .and_then(|v| v.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("character"))
+            .and_then(|v| v.as_u64()),
+        Some(3)
+    );
 
     client.shutdown().await.expect("Shutdown failed");
 }
@@ -323,8 +356,14 @@ async fn test_incremental_changes_replace_unicode_scalar() {
         uri,
         2,
         Range {
-            start: Position { line: 0, character: 1 },
-            end: Position { line: 0, character: 3 },
+            start: Position {
+                line: 0,
+                character: 1,
+            },
+            end: Position {
+                line: 0,
+                character: 3,
+            },
         },
         "x",
     );
@@ -343,7 +382,10 @@ async fn test_incremental_changes_replace_unicode_scalar() {
         .get("result")
         .and_then(|r| r.as_array())
         .expect("Missing result array");
-    assert_eq!(edits[0].get("newText").and_then(|v| v.as_str()), Some("AXB"));
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("AXB")
+    );
 
     client.shutdown().await.expect("Shutdown failed");
 }
@@ -365,8 +407,14 @@ async fn test_incremental_changes_insert_after_unicode_scalar() {
         uri,
         2,
         Range {
-            start: Position { line: 0, character: 3 },
-            end: Position { line: 0, character: 3 },
+            start: Position {
+                line: 0,
+                character: 3,
+            },
+            end: Position {
+                line: 0,
+                character: 3,
+            },
         },
         "!",
     );
@@ -385,7 +433,10 @@ async fn test_incremental_changes_insert_after_unicode_scalar() {
         .get("result")
         .and_then(|r| r.as_array())
         .expect("Missing result array");
-    assert_eq!(edits[0].get("newText").and_then(|v| v.as_str()), Some("A🙂!"));
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("A🙂!")
+    );
 
     client.shutdown().await.expect("Shutdown failed");
 }
@@ -399,7 +450,10 @@ async fn test_incremental_changes_crlf_line_offsets() {
 
     let uri = "file:///tmp/crlf.txt";
     client
-        .send_notification("textDocument/didOpen", create_did_open_params(uri, "a\r\nb"))
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri, "a\r\nb"),
+        )
         .await
         .expect("didOpen failed");
 
@@ -407,8 +461,14 @@ async fn test_incremental_changes_crlf_line_offsets() {
         uri,
         2,
         Range {
-            start: Position { line: 1, character: 0 },
-            end: Position { line: 1, character: 1 },
+            start: Position {
+                line: 1,
+                character: 0,
+            },
+            end: Position {
+                line: 1,
+                character: 1,
+            },
         },
         "B",
     );
@@ -427,7 +487,10 @@ async fn test_incremental_changes_crlf_line_offsets() {
         .get("result")
         .and_then(|r| r.as_array())
         .expect("Missing result array");
-    assert_eq!(edits[0].get("newText").and_then(|v| v.as_str()), Some("A\r\nB"));
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("A\r\nB")
+    );
 
     client.shutdown().await.expect("Shutdown failed");
 }

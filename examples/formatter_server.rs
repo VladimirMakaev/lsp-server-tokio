@@ -102,7 +102,11 @@ where
     // Initialize server state
     let mut state = ServerState::new();
 
-    log_message(&sender, MessageType::INFO, "Formatter server ready".to_string());
+    log_message(
+        &sender,
+        MessageType::INFO,
+        "Formatter server ready".to_string(),
+    );
 
     // Main message loop
     while let Some(result) = conn.receiver.next().await {
@@ -253,7 +257,11 @@ async fn format_document(
         .get(uri)
         .ok_or(FormatError::DocumentNotFound)?;
 
-    log_message(sender, MessageType::LOG, format!("Formatting document: {:?}", uri));
+    log_message(
+        sender,
+        MessageType::LOG,
+        format!("Formatting document: {:?}", uri),
+    );
 
     // Simulate a long-running operation (200ms delay)
     // This allows cancellation to be tested
