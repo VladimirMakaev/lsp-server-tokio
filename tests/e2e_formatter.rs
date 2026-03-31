@@ -177,6 +177,105 @@ async fn test_format_document() {
     client.shutdown().await.expect("Shutdown failed");
 }
 
+/// Tests that whole-document edits include a trailing newline in the replacement range.
+#[tokio::test]
+async fn test_format_document_preserves_trailing_newline_range() {
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
+
+    initialize(&mut client).await.expect("Initialize failed");
+
+    let uri = "file:///tmp/trailing-newline.txt";
+    client
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri, "hello\n"),
+        )
+        .await
+        .expect("didOpen failed");
+
+    client
+        .send_request("textDocument/formatting", create_formatting_params(uri))
+        .await
+        .expect("Formatting request failed");
+
+    let response = client.read_response().await.expect("Read response failed");
+    let edits = response
+        .get("result")
+        .and_then(|r| r.as_array())
+        .expect("Missing result array");
+    assert_eq!(edits.len(), 1, "Expected a single whole-document edit");
+
+    let range = edits[0].get("range").expect("Missing range");
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("HELLO\n")
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("line"))
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("character"))
+            .and_then(|v| v.as_u64()),
+        Some(0)
+    );
+
+    client.shutdown().await.expect("Shutdown failed");
+}
+
+/// Tests that formatting ranges use UTF-16 code units rather than byte counts.
+#[tokio::test]
+async fn test_format_document_unicode_range_uses_utf16_units() {
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
+
+    initialize(&mut client).await.expect("Initialize failed");
+
+    let uri = "file:///tmp/unicode.txt";
+    client
+        .send_notification("textDocument/didOpen", create_did_open_params(uri, "🙂x"))
+        .await
+        .expect("didOpen failed");
+
+    client
+        .send_request("textDocument/formatting", create_formatting_params(uri))
+        .await
+        .expect("Formatting request failed");
+
+    let response = client.read_response().await.expect("Read response failed");
+    let edits = response
+        .get("result")
+        .and_then(|r| r.as_array())
+        .expect("Missing result array");
+    assert_eq!(edits.len(), 1, "Expected a single whole-document edit");
+
+    let range = edits[0].get("range").expect("Missing range");
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("🙂X")
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("line"))
+            .and_then(|v| v.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        range
+            .get("end")
+            .and_then(|v| v.get("character"))
+            .and_then(|v| v.as_u64()),
+        Some(3)
+    );
+
+    client.shutdown().await.expect("Shutdown failed");
+}
+
 /// Tests incremental document changes.
 #[tokio::test]
 async fn test_incremental_changes() {
@@ -236,6 +335,162 @@ async fn test_incremental_changes() {
     // After incremental change "one" -> "ONE", then uppercase:
     // "line ONE\nline two" -> "LINE ONE\nLINE TWO"
     assert!(new_text.contains("LINE ONE"), "Should contain LINE ONE");
+
+    client.shutdown().await.expect("Shutdown failed");
+}
+
+/// Tests that UTF-16 ranges replace a full non-BMP character without crashing the server.
+#[tokio::test]
+async fn test_incremental_changes_replace_unicode_scalar() {
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
+
+    initialize(&mut client).await.expect("Initialize failed");
+
+    let uri = "file:///tmp/unicode-replace.txt";
+    client
+        .send_notification("textDocument/didOpen", create_did_open_params(uri, "a🙂b"))
+        .await
+        .expect("didOpen failed");
+
+    let change_params = create_did_change_params(
+        uri,
+        2,
+        Range {
+            start: Position {
+                line: 0,
+                character: 1,
+            },
+            end: Position {
+                line: 0,
+                character: 3,
+            },
+        },
+        "x",
+    );
+    client
+        .send_notification("textDocument/didChange", change_params)
+        .await
+        .expect("didChange failed");
+
+    client
+        .send_request("textDocument/formatting", create_formatting_params(uri))
+        .await
+        .expect("Formatting request failed");
+
+    let response = client.read_response().await.expect("Read response failed");
+    let edits = response
+        .get("result")
+        .and_then(|r| r.as_array())
+        .expect("Missing result array");
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("AXB")
+    );
+
+    client.shutdown().await.expect("Shutdown failed");
+}
+
+/// Tests that UTF-16 positions can insert after a non-BMP character.
+#[tokio::test]
+async fn test_incremental_changes_insert_after_unicode_scalar() {
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
+
+    initialize(&mut client).await.expect("Initialize failed");
+
+    let uri = "file:///tmp/unicode-insert.txt";
+    client
+        .send_notification("textDocument/didOpen", create_did_open_params(uri, "a🙂"))
+        .await
+        .expect("didOpen failed");
+
+    let change_params = create_did_change_params(
+        uri,
+        2,
+        Range {
+            start: Position {
+                line: 0,
+                character: 3,
+            },
+            end: Position {
+                line: 0,
+                character: 3,
+            },
+        },
+        "!",
+    );
+    client
+        .send_notification("textDocument/didChange", change_params)
+        .await
+        .expect("didChange failed");
+
+    client
+        .send_request("textDocument/formatting", create_formatting_params(uri))
+        .await
+        .expect("Formatting request failed");
+
+    let response = client.read_response().await.expect("Read response failed");
+    let edits = response
+        .get("result")
+        .and_then(|r| r.as_array())
+        .expect("Missing result array");
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("A🙂!")
+    );
+
+    client.shutdown().await.expect("Shutdown failed");
+}
+
+/// Tests that CRLF documents apply incremental line edits at the correct byte offset.
+#[tokio::test]
+async fn test_incremental_changes_crlf_line_offsets() {
+    let mut client = TestClient::spawn().await.expect("Failed to spawn server");
+
+    initialize(&mut client).await.expect("Initialize failed");
+
+    let uri = "file:///tmp/crlf.txt";
+    client
+        .send_notification(
+            "textDocument/didOpen",
+            create_did_open_params(uri, "a\r\nb"),
+        )
+        .await
+        .expect("didOpen failed");
+
+    let change_params = create_did_change_params(
+        uri,
+        2,
+        Range {
+            start: Position {
+                line: 1,
+                character: 0,
+            },
+            end: Position {
+                line: 1,
+                character: 1,
+            },
+        },
+        "B",
+    );
+    client
+        .send_notification("textDocument/didChange", change_params)
+        .await
+        .expect("didChange failed");
+
+    client
+        .send_request("textDocument/formatting", create_formatting_params(uri))
+        .await
+        .expect("Formatting request failed");
+
+    let response = client.read_response().await.expect("Read response failed");
+    let edits = response
+        .get("result")
+        .and_then(|r| r.as_array())
+        .expect("Missing result array");
+    assert_eq!(
+        edits[0].get("newText").and_then(|v| v.as_str()),
+        Some("A\r\nB")
+    );
 
     client.shutdown().await.expect("Shutdown failed");
 }
