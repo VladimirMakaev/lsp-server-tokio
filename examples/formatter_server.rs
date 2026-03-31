@@ -76,7 +76,7 @@ async fn main() {
 
     match conn.initialize(capabilities).await {
         Ok(params) => {
-            let sender = conn.client_sender();
+            let sender = conn.client_sender().expect("client sender should be available");
 
             // Parse client's initialize params to understand client capabilities
             if let Ok(init_params) = serde_json::from_value::<InitializeParams>(params) {

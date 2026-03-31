@@ -27,9 +27,10 @@ impl ResponseMap {
     ) -> std::sync::MutexGuard<'_, HashMap<RequestId, oneshot::Sender<Response>>> {
         match self.pending.lock() {
             Ok(pending) => pending,
-            Err(poisoned) => panic!(
-                "response map lock poisoned during {operation}; expected healthy routing state, received poisoned mutex: {poisoned}"
-            ),
+            Err(poisoned) => {
+                let _ = operation;
+                poisoned.into_inner()
+            }
         }
     }
 
@@ -263,7 +264,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         sender
             .notify("window/logMessage", Some(json!({"type": 4})))
@@ -283,7 +284,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         sender.respond(Response::ok(7, json!("ok"))).unwrap();
 
@@ -301,7 +302,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let first_sender = sender.clone();
         let first_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -361,7 +362,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
             tokio::spawn(async move {
@@ -394,7 +395,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let methods = ["first", "second", "third"];
         let tasks = methods.into_iter().map(|method| {
@@ -444,7 +445,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let _client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
             tokio::spawn(async move {
@@ -469,7 +470,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         drop(client);
 
@@ -487,7 +488,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         drop(client);
         let _ = sender.notify("window/logMessage", None);
@@ -509,7 +510,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
         let sender_clone = sender.clone();
 
         let first_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -563,7 +564,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
             tokio::spawn(async move { sender.request("test", None::<serde_json::Value>).await });
@@ -588,7 +589,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
             tokio::spawn(async move { sender.request("test", None::<serde_json::Value>).await });
@@ -615,7 +616,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let task = tokio::spawn(async move {
             sender
@@ -652,7 +653,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let task =
             tokio::spawn(async move { sender.request("aborted", None::<serde_json::Value>).await });
@@ -682,7 +683,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let first_sender = sender.clone();
         let first_task = tokio::spawn(async move {
@@ -768,7 +769,7 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         let timeout_sender = sender.clone();
         let timeout_task = tokio::spawn(async move {

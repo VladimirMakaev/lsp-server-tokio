@@ -27,7 +27,7 @@ let capabilities = serde_json::json!({
 });
 
 let _client_params = conn.initialize(capabilities).await?;
-let sender = conn.client_sender();
+let sender = conn.client_sender().expect("client sender should be available");
 
 while let Some(result) = conn.receiver.next().await {
     let msg = result?;
@@ -87,7 +87,7 @@ let mut conn = Connection::stdio();
 let capabilities = serde_json::json!({});
 let _ = conn.initialize(capabilities).await?;
 
-let sender = conn.client_sender();
+let sender = conn.client_sender().expect("client sender should be available");
 let background_sender = sender.clone();
 
 tokio::spawn(async move {

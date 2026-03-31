@@ -31,7 +31,12 @@
 //!
 //! // Send a request from client
 //! let request = Message::Request(Request::new(1, "textDocument/hover", None));
-//! client.sender().send(request).await.unwrap();
+//! client
+//!     .sender()
+//!     .expect("sender should be available")
+//!     .send(request)
+//!     .await
+//!     .unwrap();
 //!
 //! // Receive on server
 //! let msg = server.receiver.next().await.unwrap().unwrap();
@@ -120,7 +125,7 @@ pub type StdioConnection<I = ()> =
 /// let _server: Connection<_, ()> = Connection::new(server_stream);
 ///
 /// // Move sender to a task
-/// let mut sender: Sender<_> = client.into_sender();
+/// let mut sender: Sender<_> = client.into_sender().expect("sender should be available");
 /// sender.send(Message::Request(Request::new(1, "test", None))).await.unwrap();
 /// # });
 /// ```
@@ -322,26 +327,29 @@ where
         }
     }
 
+    fn sender_taken_error() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "connection sender already taken",
+        )
+    }
+
     /// Returns a mutable reference to the sender half.
     ///
-    /// # Panics
-    ///
-    /// Panics if the sender has already been taken by [`Connection::client_sender()`]
-    /// or [`Connection::into_sender()`].
-    pub fn sender(&mut self) -> &mut Sender<T> {
-        self.sender.as_mut().expect(
-            "connection sender already taken; use ClientSender after calling client_sender()",
-        )
+    /// Returns `None` if the sender has already been taken by
+    /// [`Connection::client_sender()`] or [`Connection::into_sender()`].
+    #[must_use]
+    pub fn sender(&mut self) -> Option<&mut Sender<T>> {
+        self.sender.as_mut()
     }
 
     /// Consumes the connection and returns ownership of the sender half.
     ///
-    /// # Panics
-    ///
-    /// Panics if the sender has already been taken by [`Connection::client_sender()`].
-    pub fn into_sender(self) -> Sender<T> {
+    /// Returns `None` if the sender has already been taken by
+    /// [`Connection::client_sender()`].
+    #[must_use]
+    pub fn into_sender(self) -> Option<Sender<T>> {
         self.sender
-            .expect("connection sender already taken; ClientSender owns outbound traffic")
     }
 
     /// Returns the current lifecycle state.
@@ -403,10 +411,7 @@ where
                 .send(message)
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "connection sender already taken",
-            ))
+            Err(Self::sender_taken_error())
         }
     }
 }
@@ -540,23 +545,16 @@ where
     /// and routes future responses through an internal response map. After this
     /// call, all outbound messages must go through the returned [`ClientSender`].
     ///
-    /// # Panics
-    ///
-    /// Panics if the sender has already been taken.
     #[must_use]
-    pub fn client_sender(&mut self) -> ClientSender
+    pub fn client_sender(&mut self) -> Option<ClientSender>
     where
         T: Unpin + Send + 'static,
     {
-        assert!(
-            self.response_map.is_none(),
-            "connection sender already taken; client_sender() can only be called once"
-        );
+        if self.response_map.is_some() {
+            return None;
+        }
 
-        let mut sender = self
-            .sender
-            .take()
-            .expect("connection sender already taken; client_sender() can only be called once");
+        let mut sender = self.sender.take()?;
         let (tx, mut rx) = mpsc::unbounded_channel();
         let response_map = ResponseMap::new();
         let response_map_task = response_map.clone();
@@ -574,7 +572,7 @@ where
 
         self.outbound_tx = Some(tx.clone());
         self.response_map = Some(response_map.clone());
-        ClientSender::new(tx, response_map)
+        Some(ClientSender::new(tx, response_map))
     }
 }
 
@@ -754,7 +752,10 @@ where
                         "Server not yet initialized",
                     );
                     let response = Message::Response(crate::Response::err(req.id, error));
-                    if let Err(e) = self.sender().send(response).await {
+                    let sender = self.sender().ok_or_else(|| {
+                        ProtocolError::Io(Self::sender_taken_error())
+                    })?;
+                    if let Err(e) = sender.send(response).await {
                         return Err(ProtocolError::Io(e));
                     }
                     // Continue waiting for initialize
@@ -847,7 +848,10 @@ where
                             "Server not yet initialized",
                         );
                         let response = Message::Response(crate::Response::err(req.id, error));
-                        if let Err(e) = self.sender().send(response).await {
+                        let sender = self.sender().ok_or_else(|| {
+                            ProtocolError::Io(Self::sender_taken_error())
+                        })?;
+                        if let Err(e) = sender.send(response).await {
                             return Err(ProtocolError::Io(e));
                         }
                     }
@@ -1064,15 +1068,14 @@ where
         params: Option<serde_json::Value>,
         timeout: std::time::Duration,
     ) -> Result<crate::Response, ProtocolError> {
-        if self.sender.is_none() {
-            return Err(ProtocolError::Disconnected);
-        }
-
         let id = id.into();
         let request = crate::Request::new(id.clone(), method, params);
 
         // Send the request
-        if let Err(e) = self.sender().send(Message::Request(request)).await {
+        let sender = self
+            .sender()
+            .ok_or_else(|| ProtocolError::Io(Self::sender_taken_error()))?;
+        if let Err(e) = sender.send(Message::Request(request)).await {
             return Err(ProtocolError::Io(e));
         }
 
@@ -1235,7 +1238,7 @@ mod tests {
 
         // Send request from client
         let request = Message::Request(Request::new(1, "test", None));
-        client.sender().send(request).await.unwrap();
+        client.sender().expect("sender should be available").send(request).await.unwrap();
 
         // Receive on server
         let received = server.receiver.next().await.unwrap().unwrap();
@@ -1263,7 +1266,7 @@ mod tests {
                 "position": {"line": 10, "character": 5}
             })),
         ));
-        client.sender().send(request).await.unwrap();
+        client.sender().expect("sender should be available").send(request).await.unwrap();
 
         // Server receives request
         let received = server.receiver.next().await.unwrap().unwrap();
@@ -1276,7 +1279,7 @@ mod tests {
                 "contents": "fn main()"
             }),
         ));
-        server.sender().send(response).await.unwrap();
+        server.sender().expect("sender should be available").send(response).await.unwrap();
 
         // Client receives response
         let received = client.receiver.next().await.unwrap().unwrap();
@@ -1303,7 +1306,7 @@ mod tests {
 
         // Verify functionality
         let request = Message::Request(Request::new(42, "test", None));
-        client.sender().send(request).await.unwrap();
+        client.sender().expect("sender should be available").send(request).await.unwrap();
 
         let received = server.receiver.next().await.unwrap().unwrap();
         assert!(received.is_request());
@@ -1323,9 +1326,9 @@ mod tests {
         let msg2 = Message::Request(Request::new(2, "second", None));
         let msg3 = Message::Request(Request::new(3, "third", None));
 
-        client.sender().send(msg1).await.unwrap();
-        client.sender().send(msg2).await.unwrap();
-        client.sender().send(msg3).await.unwrap();
+        client.sender().expect("sender should be available").send(msg1).await.unwrap();
+        client.sender().expect("sender should be available").send(msg2).await.unwrap();
+        client.sender().expect("sender should be available").send(msg3).await.unwrap();
 
         // Receive all 3 - order must be preserved
         let recv1 = server.receiver.next().await.unwrap().unwrap();
@@ -1361,7 +1364,7 @@ mod tests {
         let server: Connection<_, ()> = Connection::new(server_stream);
 
         // Move sender and receiver to separate tasks
-        let mut client_sender = client.into_sender();
+        let mut client_sender = client.into_sender().expect("sender should be available");
         let mut server_receiver = server.receiver;
 
         let send_task = tokio::spawn(async move {
@@ -1455,7 +1458,7 @@ mod tests {
         let init_params = json!({"processId": 1234, "capabilities": {}});
         let init_request =
             Message::Request(Request::new(1, "initialize", Some(init_params.clone())));
-        client.sender().send(init_request).await.unwrap();
+        client.sender().expect("sender should be available").send(init_request).await.unwrap();
 
         // Server waits for initialize
         let (id, params) = server.initialize_start().await.unwrap();
@@ -1482,7 +1485,7 @@ mod tests {
 
         // Client sends initialized notification
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.sender().expect("sender should be available").send(initialized).await.unwrap();
 
         // Server's initialize_finish completes
         let server = server_task.await.unwrap();
@@ -1507,7 +1510,7 @@ mod tests {
 
         // Client sends a non-initialize request first
         let hover_request = Message::Request(Request::new(1, "textDocument/hover", None));
-        client.sender().send(hover_request).await.unwrap();
+        client.sender().expect("sender should be available").send(hover_request).await.unwrap();
 
         // Spawn server's initialize_start
         let server_task = tokio::spawn(async move {
@@ -1527,7 +1530,7 @@ mod tests {
 
         // Now client sends initialize - should be accepted
         let init_request = Message::Request(Request::new(2, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.sender().expect("sender should be available").send(init_request).await.unwrap();
 
         let server = server_task.await.unwrap();
         assert_eq!(server.lifecycle_state(), LifecycleState::Initializing);
@@ -1541,6 +1544,7 @@ mod tests {
 
         client
             .sender()
+            .expect("sender should be available")
             .send(Message::Request(Request::new(1, "initialize", None)))
             .await
             .unwrap();
@@ -1570,11 +1574,11 @@ mod tests {
 
         // Client sends random notification before init
         let random_notif = Message::Notification(Notification::new("textDocument/didOpen", None));
-        client.sender().send(random_notif).await.unwrap();
+        client.sender().expect("sender should be available").send(random_notif).await.unwrap();
 
         // Client sends initialize request
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.sender().expect("sender should be available").send(init_request).await.unwrap();
 
         // Server's initialize_start should skip notification and find initialize
         let (id, _params) = server.initialize_start().await.unwrap();
@@ -1590,7 +1594,7 @@ mod tests {
 
         // Client sends exit notification instead of initialize
         let exit_notif = Message::Notification(Notification::new("exit", None));
-        client.sender().send(exit_notif).await.unwrap();
+        client.sender().expect("sender should be available").send(exit_notif).await.unwrap();
 
         // Server's initialize_start should return Disconnected
         let result = server.initialize_start().await;
@@ -1605,7 +1609,7 @@ mod tests {
 
         // Complete initialization
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.sender().expect("sender should be available").send(init_request).await.unwrap();
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
@@ -1619,14 +1623,14 @@ mod tests {
 
         let _ = client.receiver.next().await; // Receive InitializeResult
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.sender().expect("sender should be available").send(initialized).await.unwrap();
 
         let mut server = server_task.await.unwrap();
         assert!(server.is_running());
 
         // Client sends shutdown request
         let shutdown_request = Message::Request(Request::new(2, "shutdown", None));
-        client.sender().send(shutdown_request).await.unwrap();
+        client.sender().expect("sender should be available").send(shutdown_request).await.unwrap();
 
         // Server receives and handles shutdown
         let msg = server.receiver.next().await.unwrap().unwrap();
@@ -1663,7 +1667,7 @@ mod tests {
 
         // Complete initialization
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.sender().expect("sender should be available").send(init_request).await.unwrap();
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
@@ -1677,7 +1681,7 @@ mod tests {
 
         let _ = client.receiver.next().await;
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.sender().expect("sender should be available").send(initialized).await.unwrap();
 
         let mut server = server_task.await.unwrap();
         assert!(server.is_running());
@@ -1696,7 +1700,7 @@ mod tests {
 
         // Complete initialization
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.sender().expect("sender should be available").send(init_request).await.unwrap();
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
@@ -1710,7 +1714,7 @@ mod tests {
 
         let _ = client.receiver.next().await;
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.sender().expect("sender should be available").send(initialized).await.unwrap();
 
         let mut server = server_task.await.unwrap();
 
@@ -1723,7 +1727,7 @@ mod tests {
 
         // Send shutdown
         let shutdown_request = Message::Request(Request::new(2, "shutdown", None));
-        client.sender().send(shutdown_request).await.unwrap();
+        client.sender().expect("sender should be available").send(shutdown_request).await.unwrap();
 
         let msg = server.receiver.next().await.unwrap().unwrap();
         if let Message::Request(req) = msg {
@@ -2142,7 +2146,7 @@ mod tests {
         if let Message::Request(req) = msg {
             assert_eq!(req.method, "client/registerCapability");
             let response = Message::Response(Response::ok(req.id, json!(null)));
-            client.sender().send(response).await.unwrap();
+            client.sender().expect("sender should be available").send(response).await.unwrap();
         }
 
         // Server should get the response
@@ -2214,6 +2218,7 @@ mod tests {
         // Client sends a notification first (should be discarded by send_request)
         client
             .sender()
+            .expect("sender should be available")
             .send(Message::Notification(Notification::new(
                 "textDocument/didOpen",
                 None,
@@ -2224,6 +2229,7 @@ mod tests {
         // Client sends a response with wrong ID (should be discarded)
         client
             .sender()
+            .expect("sender should be available")
             .send(Message::Response(Response::ok(999, json!("wrong"))))
             .await
             .unwrap();
@@ -2231,6 +2237,7 @@ mod tests {
         // Client sends the correct response
         client
             .sender()
+            .expect("sender should be available")
             .send(Message::Response(Response::ok(42, json!("correct"))))
             .await
             .unwrap();
@@ -2260,7 +2267,7 @@ mod tests {
                 req.id,
                 crate::ResponseError::new(crate::ErrorCode::MethodNotFound, "Not supported"),
             ));
-            client.sender().send(error_resp).await.unwrap();
+            client.sender().expect("sender should be available").send(error_resp).await.unwrap();
         }
 
         let result = server_task.await.unwrap().unwrap();
@@ -2290,6 +2297,7 @@ mod tests {
             assert_eq!(req.id, crate::RequestId::String("req-abc".to_string()));
             client
                 .sender()
+                .expect("sender should be available")
                 .send(Message::Response(Response::ok("req-abc", json!("ok"))))
                 .await
                 .unwrap();
@@ -2312,7 +2320,7 @@ mod tests {
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
 
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         // Notification via ClientSender should arrive on client's receiver
         sender
@@ -2336,7 +2344,7 @@ mod tests {
         let mut server: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
 
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         // Spawn request task
         let sender_clone = sender.clone();
@@ -2361,6 +2369,7 @@ mod tests {
         // Client sends response back
         client
             .sender()
+            .expect("sender should be available")
             .send(Message::Response(Response::ok(req_id.clone(), json!(null))))
             .await
             .unwrap();
@@ -2387,7 +2396,7 @@ mod tests {
         let (client_stream, _server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, ()> = Connection::new(client_stream);
 
-        let sender = server.client_sender();
+        let sender = server.client_sender().expect("client sender should be available");
 
         // Register the same ID in both response_map (via ClientSender) and outgoing queue
         let mut outgoing_rx = server.request_queue.outgoing.register(1.into());
@@ -2425,7 +2434,7 @@ mod tests {
         // Before client_sender: sender field is Some
         assert!(server.sender.is_some());
 
-        let _sender = server.client_sender();
+        let _sender = server.client_sender().expect("client sender should be available");
 
         // After client_sender: sender is None, outbound_tx is Some
         assert!(server.sender.is_none());
@@ -2445,23 +2454,24 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "connection sender already taken")]
-    async fn client_sender_panics_on_second_call() {
+    async fn client_sender_returns_none_on_second_call() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, ()> = Connection::new(stream);
 
-        let _sender1 = conn.client_sender();
-        let _sender2 = conn.client_sender(); // should panic
+        let _sender1 = conn.client_sender().expect("client sender should be available");
+        let sender2 = conn.client_sender();
+
+        assert!(sender2.is_none());
     }
 
     #[tokio::test]
-    #[should_panic(expected = "connection sender already taken")]
-    async fn sender_panics_after_client_sender() {
+    async fn sender_returns_none_after_client_sender() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, ()> = Connection::new(stream);
 
-        let _sender = conn.client_sender();
-        let _ = conn.sender(); // should panic — sender was taken
+        let _sender = conn.client_sender().expect("client sender should be available");
+
+        assert!(conn.sender().is_none());
     }
 
     #[tokio::test]
@@ -2470,7 +2480,7 @@ mod tests {
         let conn: Connection<_, ()> = Connection::new(server_stream);
         let mut client: Connection<_, ()> = Connection::new(client_stream);
 
-        let mut sender = conn.into_sender();
+        let mut sender = conn.into_sender().expect("sender should be available");
         sender
             .send(Message::Notification(Notification::new("test/hello", None)))
             .await
@@ -2481,11 +2491,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn into_sender_returns_none_after_client_sender() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, ()> = Connection::new(stream);
+
+        let _sender = conn.client_sender().expect("client sender should be available");
+
+        assert!(conn.into_sender().is_none());
+    }
+
+    #[tokio::test]
     async fn deprecated_send_request_errors_after_client_sender() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, ()> = Connection::new(stream);
 
-        let _sender = conn.client_sender();
+        let _sender = conn.client_sender().expect("client sender should be available");
 
         // send_request should fail because sender was taken
         #[allow(deprecated)]
@@ -2493,8 +2513,13 @@ mod tests {
             .send_request(1, "test", None, Duration::from_secs(1))
             .await;
         assert!(
-            matches!(result, Err(ProtocolError::Disconnected)),
-            "Expected Disconnected after client_sender(), got: {result:?}"
+            matches!(
+                result,
+                Err(ProtocolError::Io(ref err))
+                    if err.kind() == std::io::ErrorKind::BrokenPipe
+                        && err.to_string() == "connection sender already taken"
+            ),
+            "Expected broken-pipe Io error after client_sender(), got: {result:?}"
         );
     }
 }
