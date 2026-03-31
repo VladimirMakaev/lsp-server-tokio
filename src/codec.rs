@@ -463,8 +463,8 @@ mod tests {
 
         let decoded = codec.decode(&mut buf).unwrap().unwrap();
         if let Message::Response(r) = decoded {
-            assert!(r.error.is_some());
-            assert_eq!(r.error.unwrap().code, -32601);
+            assert!(r.error().is_some());
+            assert_eq!(r.error().unwrap().code, -32601);
         } else {
             panic!("Expected response");
         }

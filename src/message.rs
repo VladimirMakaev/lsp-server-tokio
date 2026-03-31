@@ -11,7 +11,7 @@
 //! - **Response**: Has `id` AND (`result` OR `error`) fields
 //! - **Notification**: Has `method` field but NO `id` field
 
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::ResponseError;
@@ -72,32 +72,71 @@ impl Request {
 /// # Examples
 ///
 /// ```
-/// use lsp_server_tokio::{Response, ResponseError, ErrorCode};
+/// use lsp_server_tokio::{ErrorCode, Response, ResponseBody, ResponseError};
 /// use serde_json::json;
 ///
 /// // Success response
 /// let ok = Response::ok(1, json!({"items": []}));
-/// assert!(ok.result.is_some());
-/// assert!(ok.error.is_none());
+/// assert!(ok.is_ok());
+/// assert!(matches!(ok.body(), ResponseBody::Success(_)));
+/// assert!(ok.result().is_some());
+/// assert!(ok.error().is_none());
 ///
 /// // Error response
 /// let err = Response::err(1, ResponseError::new(ErrorCode::MethodNotFound, "Method not found"));
-/// assert!(err.result.is_none());
-/// assert!(err.error.is_some());
+/// assert!(err.is_err());
+/// assert!(matches!(err.body(), ResponseBody::Error(_)));
+/// assert!(err.result().is_none());
+/// assert!(err.error().is_some());
 /// ```
-#[derive(Debug, Clone, Serialize)]
+///
+/// ```compile_fail
+/// use lsp_server_tokio::Response;
+/// use serde_json::json;
+///
+/// let _ = Response {
+///     id: Some(1.into()),
+///     result: Some(json!("ok")),
+///     error: None,
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub enum ResponseBody {
+    /// A successful response with a JSON result value.
+    Success(Value),
+    /// A failed response with a structured JSON-RPC error.
+    Error(ResponseError),
+}
+
+/// A JSON-RPC 2.0 response message.
+#[derive(Debug, Clone)]
 pub struct Response {
     /// The JSON-RPC protocol version. Always "2.0".
-    pub jsonrpc: String,
+    jsonrpc: String,
     /// The request id. None for parse error responses.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<RequestId>,
-    /// The result of the request (mutually exclusive with error).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    /// The error that occurred (mutually exclusive with result).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<ResponseError>,
+    /// The response payload, which is either a result or an error.
+    body: ResponseBody,
+}
+
+impl Serialize for Response {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("Response", 3)?;
+        state.serialize_field("jsonrpc", &self.jsonrpc)?;
+        if let Some(id) = &self.id {
+            state.serialize_field("id", id)?;
+        }
+
+        match &self.body {
+            ResponseBody::Success(result) => state.serialize_field("result", result)?,
+            ResponseBody::Error(error) => state.serialize_field("error", error)?,
+        }
+
+        state.end()
+    }
 }
 
 // Custom deserializer for Response that ensures either result or error is present
@@ -117,13 +156,25 @@ impl<'de> Deserialize<'de> for Response {
 
         // Check if result or error field is present (not just non-null)
         let has_result = obj.contains_key("result");
-        let has_error = obj.contains_key("error");
+        let error_value = obj.get("error").cloned();
+        let mut has_error = obj.contains_key("error");
 
-        // A valid Response MUST have either result or error field present
-        if !has_result && !has_error {
-            return Err(D::Error::custom(
-                "Response must have either 'result' or 'error' field",
-            ));
+        if has_error && error_value.as_ref().is_some_and(Value::is_null) {
+            has_error = false;
+        }
+
+        match (has_result, has_error) {
+            (true, true) => {
+                return Err(D::Error::custom(
+                    "Response cannot contain both 'result' and 'error' fields",
+                ));
+            }
+            (false, false) => {
+                return Err(D::Error::custom(
+                    "Response must have either 'result' or 'error' field",
+                ));
+            }
+            _ => {}
         }
 
         // Extract jsonrpc
@@ -147,52 +198,37 @@ impl<'de> Deserialize<'de> for Response {
             None
         };
 
-        // Extract result (Some(Value) if present, including null; None if absent)
-        let result = if has_result {
-            Some(obj.get("result").cloned().unwrap_or(Value::Null))
+        let body = if has_result {
+            ResponseBody::Success(obj.get("result").cloned().unwrap_or(Value::Null))
         } else {
-            None
+            let error_val = error_value.unwrap_or(Value::Null);
+            ResponseBody::Error(
+                serde_json::from_value::<ResponseError>(error_val).map_err(D::Error::custom)?,
+            )
         };
 
-        // Extract error
-        let error = if has_error {
-            let error_val = obj.get("error").cloned().unwrap_or(Value::Null);
-            if error_val.is_null() {
-                None
-            } else {
-                Some(serde_json::from_value::<ResponseError>(error_val).map_err(D::Error::custom)?)
-            }
-        } else {
-            None
-        };
-
-        Ok(Response {
-            jsonrpc,
-            id,
-            result,
-            error,
-        })
+        Ok(Response { jsonrpc, id, body })
     }
 }
 
 impl Response {
     /// Creates a successful response with the given id and result.
+    #[must_use]
     pub fn ok(id: impl Into<RequestId>, result: Value) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id: Some(id.into()),
-            result: Some(result),
-            error: None,
+            body: ResponseBody::Success(result),
         }
     }
 
     /// Creates an error response with the given id and error.
+    #[must_use]
     pub fn err(id: impl Into<RequestId>, error: ResponseError) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id: Some(id.into()),
-            result: None,
-            error: Some(error),
+            body: ResponseBody::Error(error),
         }
     }
 
@@ -204,9 +240,56 @@ impl Response {
         Self {
             jsonrpc: "2.0".to_string(),
             id: None,
-            result: None,
-            error: Some(error),
+            body: ResponseBody::Error(error),
         }
+    }
+
+    /// Returns the JSON-RPC protocol version for this response.
+    #[must_use]
+    pub fn jsonrpc(&self) -> &str {
+        &self.jsonrpc
+    }
+
+    /// Returns the response body.
+    #[must_use]
+    pub fn body(&self) -> &ResponseBody {
+        &self.body
+    }
+
+    /// Returns the response result for successful responses.
+    #[must_use]
+    pub fn result(&self) -> Option<&Value> {
+        match &self.body {
+            ResponseBody::Success(result) => Some(result),
+            ResponseBody::Error(_) => None,
+        }
+    }
+
+    /// Returns the response error for failed responses.
+    #[must_use]
+    pub fn error(&self) -> Option<&ResponseError> {
+        match &self.body {
+            ResponseBody::Success(_) => None,
+            ResponseBody::Error(error) => Some(error),
+        }
+    }
+
+    /// Consumes the response and returns its body.
+    #[must_use]
+    pub fn into_body(self) -> ResponseBody {
+        self.body
+    }
+
+    /// Returns `true` when this is a successful response.
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        self.result().is_some()
+    }
+
+    /// Returns `true` when this is an error response.
+    #[must_use]
+    pub fn is_err(&self) -> bool {
+        self.error().is_some()
     }
 }
 
@@ -375,10 +458,10 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: Response = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.jsonrpc, "2.0");
+        assert_eq!(parsed.jsonrpc(), "2.0");
         assert_eq!(parsed.id, Some(RequestId::Integer(1)));
-        assert_eq!(parsed.result.unwrap(), result);
-        assert!(parsed.error.is_none());
+        assert_eq!(parsed.result().unwrap(), &result);
+        assert!(parsed.error().is_none());
     }
 
     #[test]
@@ -389,8 +472,8 @@ mod tests {
         let parsed: Response = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.id, Some(RequestId::Integer(1)));
-        assert!(parsed.result.is_none());
-        let err = parsed.error.unwrap();
+        assert!(parsed.result().is_none());
+        let err = parsed.error().unwrap();
         assert_eq!(err.code, -32601);
         assert_eq!(err.message, "Method not found");
     }
@@ -406,7 +489,7 @@ mod tests {
 
         let parsed: Response = serde_json::from_str(&json).unwrap();
         assert!(parsed.id.is_none());
-        assert!(parsed.error.is_some());
+        assert!(parsed.error().is_some());
     }
 
     #[test]
@@ -506,8 +589,8 @@ mod tests {
 
         if let Message::Response(resp) = msg {
             assert_eq!(resp.id, Some(RequestId::Integer(1)));
-            assert!(resp.result.is_some());
-            assert!(resp.error.is_none());
+            assert!(resp.result().is_some());
+            assert!(resp.error().is_none());
         } else {
             panic!("Expected Response variant");
         }
@@ -522,8 +605,8 @@ mod tests {
 
         if let Message::Response(resp) = msg {
             assert_eq!(resp.id, Some(RequestId::Integer(1)));
-            assert!(resp.result.is_none());
-            let err = resp.error.unwrap();
+            assert!(resp.result().is_none());
+            let err = resp.error().unwrap();
             assert_eq!(err.code, -32600);
         } else {
             panic!("Expected Response variant");
@@ -583,7 +666,7 @@ mod tests {
 
         if let Message::Response(resp) = msg {
             assert!(resp.id.is_none());
-            assert!(resp.error.is_some());
+            assert!(resp.error().is_some());
         } else {
             panic!("Expected Response");
         }
@@ -641,7 +724,7 @@ mod tests {
         let resp = Response::ok(0, result.clone());
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: Response = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.result.unwrap(), result);
+        assert_eq!(parsed.result().unwrap(), &result);
     }
 
     #[test]
@@ -652,8 +735,44 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: Response = serde_json::from_str(&json).unwrap();
 
-        let err = parsed.error.unwrap();
+        let err = parsed.error().unwrap();
         assert!(err.data.is_some());
-        assert_eq!(err.data.unwrap()["missing"][0], "uri");
+        assert_eq!(err.data.as_ref().unwrap()["missing"][0], "uri");
+    }
+
+    #[test]
+    fn response_accessors_match_body_variant() {
+        let ok = Response::ok(1, json!("done"));
+        assert!(ok.is_ok());
+        assert!(!ok.is_err());
+        assert!(matches!(ok.body(), ResponseBody::Success(value) if value == &json!("done")));
+
+        let err = Response::err(1, ResponseError::new(ErrorCode::InternalError, "boom"));
+        assert!(err.is_err());
+        assert!(!err.is_ok());
+        assert!(matches!(err.body(), ResponseBody::Error(error) if error.message == "boom"));
+    }
+
+    #[test]
+    fn response_into_body_preserves_payload() {
+        let response = Response::ok(7, json!({"value": true}));
+        match response.into_body() {
+            ResponseBody::Success(value) => assert_eq!(value, json!({"value": true})),
+            ResponseBody::Error(_) => panic!("expected success body"),
+        }
+    }
+
+    #[test]
+    fn response_deserialization_rejects_error_null_without_result() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":null}"#;
+        let error = serde_json::from_str::<Response>(json).unwrap_err();
+        assert!(error.to_string().contains("either 'result' or 'error'"));
+    }
+
+    #[test]
+    fn response_deserialization_rejects_both_result_and_error() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-1,"message":"x"}}"#;
+        let error = serde_json::from_str::<Response>(json).unwrap_err();
+        assert!(error.to_string().contains("both 'result' and 'error'"));
     }
 }

@@ -78,7 +78,7 @@ pub use codec::LspCodec;
 pub use connection::{Connection, Receiver, Sender, StdioConnection};
 pub use error::{ErrorCode, ResponseError};
 pub use lifecycle::{ExitCode, LifecycleState, ProtocolError};
-pub use message::{Message, Notification, Request, Response};
+pub use message::{Message, Notification, Request, Response, ResponseBody};
 pub use request_id::RequestId;
 pub use request_queue::{
     parse_cancel_params, IncomingRequests, OutgoingRequests, RequestQueue, CANCEL_REQUEST_METHOD,

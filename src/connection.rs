@@ -1055,7 +1055,7 @@ where
     ///     Duration::from_secs(10),
     /// ).await.unwrap();
     ///
-    /// println!("Client responded: {:?}", response.result);
+    /// println!("Client responded: {:?}", response.result());
     /// # });
     /// ```
     #[deprecated(
@@ -1286,7 +1286,7 @@ mod tests {
         assert!(received.is_response());
         if let Message::Response(resp) = received {
             assert_eq!(resp.id, Some(1.into()));
-            assert!(resp.result.is_some());
+            assert!(resp.result().is_some());
         } else {
             panic!("Expected Response");
         }
@@ -1427,8 +1427,8 @@ mod tests {
         // Receiver gets the response
         let response = rx.await.unwrap();
         assert_eq!(response.id, Some(1.into()));
-        assert_eq!(response.result, Some(serde_json::json!("response data")));
-        assert!(response.error.is_none());
+        assert_eq!(response.result().cloned(), Some(serde_json::json!("response data")));
+        assert!(response.error().is_none());
     }
 
     // Note: Connection::stdio() cannot be tested in unit tests as it requires
@@ -1478,8 +1478,8 @@ mod tests {
         assert!(response.is_response());
         if let Message::Response(resp) = response {
             assert_eq!(resp.id, Some(1.into()));
-            assert!(resp.result.is_some());
-            let result = resp.result.unwrap();
+            assert!(resp.result().is_some());
+            let result = resp.result().unwrap();
             assert_eq!(result["capabilities"]["textDocumentSync"], 1);
         }
 
@@ -1523,8 +1523,8 @@ mod tests {
         assert!(response.is_response());
         if let Message::Response(resp) = response {
             assert_eq!(resp.id, Some(1.into()));
-            assert!(resp.error.is_some());
-            let error = resp.error.unwrap();
+            assert!(resp.error().is_some());
+            let error = resp.error().unwrap();
             assert_eq!(error.code, crate::ErrorCode::ServerNotInitialized as i32);
         }
 
@@ -1649,7 +1649,7 @@ mod tests {
         let response = client.receiver.next().await.unwrap().unwrap();
         if let Message::Response(resp) = response {
             assert_eq!(resp.id, Some(2.into()));
-            assert_eq!(resp.result, Some(serde_json::Value::Null));
+            assert_eq!(resp.result().cloned(), Some(serde_json::Value::Null));
         }
 
         // Client sends exit
@@ -1813,8 +1813,8 @@ mod tests {
         // Verify receiver got the response
         let received = rx.await.expect("Should receive response");
         assert_eq!(received.id, Some(42.into()));
-        assert!(received.result.is_some());
-        assert_eq!(received.result.unwrap()["result"], "success");
+        assert!(received.result().is_some());
+        assert_eq!(received.result().unwrap()["result"], "success");
     }
 
     #[test]
@@ -1854,7 +1854,7 @@ mod tests {
                     resp.id.is_none(),
                     "Expected null id for parse error response"
                 );
-                assert!(resp.error.is_some());
+                assert!(resp.error().is_some());
             }
             _ => panic!("Expected IncomingMessage::ResponseUnknown"),
         }
@@ -1904,13 +1904,13 @@ mod tests {
 
         // Verify all receivers got correct responses
         let resp1 = rx1.await.unwrap();
-        assert_eq!(resp1.result.unwrap(), json!("first"));
+        assert_eq!(resp1.result().unwrap(), &json!("first"));
 
         let resp2 = rx2.await.unwrap();
-        assert_eq!(resp2.result.unwrap(), json!("second"));
+        assert_eq!(resp2.result().unwrap(), &json!("second"));
 
         let resp3 = rx3.await.unwrap();
-        assert_eq!(resp3.result.unwrap(), json!("third"));
+        assert_eq!(resp3.result().unwrap(), &json!("third"));
     }
 
     #[test]
@@ -2152,7 +2152,7 @@ mod tests {
         // Server should get the response
         let result = server_task.await.unwrap().unwrap();
         assert_eq!(result.id, Some(1.into()));
-        assert_eq!(result.result, Some(json!(null)));
+        assert_eq!(result.result().cloned(), Some(json!(null)));
     }
 
     #[allow(deprecated)]
@@ -2245,7 +2245,7 @@ mod tests {
         // Server should get the correct response
         let result = server_task.await.unwrap().unwrap();
         assert_eq!(result.id, Some(42.into()));
-        assert_eq!(result.result, Some(json!("correct")));
+        assert_eq!(result.result().cloned(), Some(json!("correct")));
     }
 
     #[allow(deprecated)]
@@ -2272,9 +2272,9 @@ mod tests {
 
         let result = server_task.await.unwrap().unwrap();
         assert_eq!(result.id, Some(1.into()));
-        assert!(result.error.is_some());
+        assert!(result.error().is_some());
         assert_eq!(
-            result.error.unwrap().code,
+            result.error().unwrap().code,
             crate::ErrorCode::MethodNotFound as i32
         );
     }
@@ -2419,7 +2419,7 @@ mod tests {
             .expect("should complete")
             .unwrap()
             .unwrap();
-        assert_eq!(resp.result, Some(json!("via-response-map")));
+        assert_eq!(resp.result().cloned(), Some(json!("via-response-map")));
 
         // outgoing queue receiver should NOT have received anything (still pending)
         assert!(outgoing_rx.try_recv().is_err());
