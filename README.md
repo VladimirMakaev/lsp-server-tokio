@@ -102,7 +102,7 @@ Use `ClientSender::respond()` for request handlers and `ClientSender::request()`
 
 ## Architecture
 
-The crate keeps transport, lifecycle, and routing separate. `Transport<T>` handles framed JSON-RPC messages, `Connection<T, I, O>` adds request tracking and lifecycle state, and `conn.route(msg)` classifies inbound messages while wiring responses and cancellation into the request queue.
+The crate keeps transport, lifecycle, and routing separate. `Transport<T>` handles framed JSON-RPC messages, `Connection<T, I>` adds request tracking and lifecycle state, and `conn.route(msg)` classifies inbound messages while wiring responses and cancellation into the request queue.
 
 ## Comparison
 
