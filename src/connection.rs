@@ -82,8 +82,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::client_sender::ResponseMap;
-use crate::ClientSender;
 use crate::lifecycle::{ExitCode, LifecycleState, ProtocolError};
+use crate::ClientSender;
 use crate::{transport, Message, RequestQueue, Transport};
 
 /// A [`Connection`] backed by [`StdioTransport`].
@@ -327,9 +327,9 @@ where
     /// Panics if the sender has already been taken by [`Connection::client_sender()`]
     /// or [`Connection::into_sender()`].
     pub fn sender(&mut self) -> &mut Sender<T> {
-        self.sender
-            .as_mut()
-            .expect("connection sender already taken; use ClientSender after calling client_sender()")
+        self.sender.as_mut().expect(
+            "connection sender already taken; use ClientSender after calling client_sender()",
+        )
     }
 
     /// Consumes the connection and returns ownership of the sender half.
@@ -397,9 +397,9 @@ where
         if let Some(sender) = self.sender.as_mut() {
             sender.send(message).await
         } else if let Some(outbound_tx) = self.outbound_tx.as_ref() {
-            outbound_tx.send(message).map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "connection closed")
-            })
+            outbound_tx
+                .send(message)
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))
         } else {
             Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
@@ -692,7 +692,8 @@ where
             crate::Notification::new(CANCEL_REQUEST_METHOD, Some(serde_json::json!({"id": id})));
 
         // Send the notification
-        self.send_message(Message::Notification(notification)).await?;
+        self.send_message(Message::Notification(notification))
+            .await?;
 
         // Cancel in the queue (returns true if was pending)
         Ok(self.request_queue.outgoing.cancel(&id))
@@ -1051,7 +1052,9 @@ where
     /// println!("Client responded: {:?}", response.result);
     /// # });
     /// ```
-    #[deprecated(note = "use Connection::client_sender() for non-blocking request/response routing")]
+    #[deprecated(
+        note = "use Connection::client_sender() for non-blocking request/response routing"
+    )]
     pub async fn send_request(
         &mut self,
         id: impl Into<crate::RequestId>,

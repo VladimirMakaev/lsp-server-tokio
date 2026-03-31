@@ -123,11 +123,7 @@ impl ClientSender {
     /// # Errors
     ///
     /// Returns [`SendError`] if the connection has been closed.
-    pub fn notify(
-        &self,
-        method: &str,
-        params: Option<serde_json::Value>,
-    ) -> Result<(), SendError> {
+    pub fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<(), SendError> {
         let notification = Notification::new(method, params);
         self.tx
             .send(Message::Notification(notification))
@@ -140,7 +136,9 @@ impl ClientSender {
     ///
     /// Returns [`SendError`] if the connection has been closed.
     pub fn respond(&self, response: Response) -> Result<(), SendError> {
-        self.tx.send(Message::Response(response)).map_err(|_| SendError)
+        self.tx
+            .send(Message::Response(response))
+            .map_err(|_| SendError)
     }
 
     /// Sends a request with an auto-generated ID and waits for the response.
@@ -241,15 +239,14 @@ impl ClientSender {
             Err(_) => Err(ProtocolError::Disconnected),
         }
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use futures::StreamExt;
     use futures::future::join_all;
+    use futures::StreamExt;
     use serde_json::json;
 
     use crate::{Connection, IncomingMessage};
@@ -308,7 +305,11 @@ mod tests {
 
         let first_sender = sender.clone();
         let first_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
-            tokio::spawn(async move { first_sender.request("first", None::<serde_json::Value>).await });
+            tokio::spawn(async move {
+                first_sender
+                    .request("first", None::<serde_json::Value>)
+                    .await
+            });
 
         let first_id = match client.receiver.next().await.unwrap().unwrap() {
             Message::Request(request) => {
@@ -320,9 +321,12 @@ mod tests {
         assert_eq!(first_id, RequestId::Integer(1));
 
         let second_sender = sender.clone();
-        let second_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> = tokio::spawn(
-            async move { second_sender.request("second", None::<serde_json::Value>).await },
-        );
+        let second_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
+            tokio::spawn(async move {
+                second_sender
+                    .request("second", None::<serde_json::Value>)
+                    .await
+            });
 
         let second_id = match client.receiver.next().await.unwrap().unwrap() {
             Message::Request(request) => {
@@ -334,11 +338,17 @@ mod tests {
         assert_eq!(second_id, RequestId::Integer(2));
 
         assert!(matches!(
-            server.route(Message::Response(Response::ok(first_id.clone(), json!("first")))),
+            server.route(Message::Response(Response::ok(
+                first_id.clone(),
+                json!("first")
+            ))),
             IncomingMessage::ResponseRouted
         ));
         assert!(matches!(
-            server.route(Message::Response(Response::ok(second_id.clone(), json!("second")))),
+            server.route(Message::Response(Response::ok(
+                second_id.clone(),
+                json!("second")
+            ))),
             IncomingMessage::ResponseRouted
         ));
 
@@ -353,11 +363,12 @@ mod tests {
         let mut client: Connection<_, (), Response> = Connection::new(client_stream);
         let sender = server.client_sender();
 
-        let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> = tokio::spawn(async move {
-            sender
-                .request("workspace/configuration", Some(json!({"items": []})))
-                .await
-        });
+        let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
+            tokio::spawn(async move {
+                sender
+                    .request("workspace/configuration", Some(json!({"items": []})))
+                    .await
+            });
 
         let id = match client.receiver.next().await.unwrap().unwrap() {
             Message::Request(request) => {
@@ -390,7 +401,10 @@ mod tests {
             let sender = sender.clone();
             let method = method.to_string();
             tokio::spawn(async move {
-                let response = sender.request(&method, None::<serde_json::Value>).await.unwrap();
+                let response = sender
+                    .request(&method, None::<serde_json::Value>)
+                    .await
+                    .unwrap();
                 (method, response)
             })
         });
@@ -404,7 +418,11 @@ mod tests {
             }
         }
 
-        for request in [requests[2].clone(), requests[0].clone(), requests[1].clone()] {
+        for request in [
+            requests[2].clone(),
+            requests[0].clone(),
+            requests[1].clone(),
+        ] {
             assert!(matches!(
                 server.route(Message::Response(Response::ok(
                     request.id.clone(),
@@ -428,11 +446,16 @@ mod tests {
         let _client: Connection<_, (), Response> = Connection::new(client_stream);
         let sender = server.client_sender();
 
-        let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> = tokio::spawn(async move {
-            sender
-                .request_timeout("workspace/configuration", None::<serde_json::Value>, Duration::from_secs(5))
-                .await
-        });
+        let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
+            tokio::spawn(async move {
+                sender
+                    .request_timeout(
+                        "workspace/configuration",
+                        None::<serde_json::Value>,
+                        Duration::from_secs(5),
+                    )
+                    .await
+            });
 
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(5)).await;
@@ -450,9 +473,12 @@ mod tests {
 
         drop(client);
 
-        let result = tokio::time::timeout(Duration::from_secs(1), sender.request("test", None::<serde_json::Value>))
-            .await
-            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            sender.request("test", None::<serde_json::Value>),
+        )
+        .await
+        .unwrap();
         assert!(matches!(result, Err(ProtocolError::Disconnected)));
     }
 
@@ -488,9 +514,12 @@ mod tests {
 
         let first_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
             tokio::spawn(async move { sender.request("first", None::<serde_json::Value>).await });
-        let second_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> = tokio::spawn(
-            async move { sender_clone.request("second", None::<serde_json::Value>).await },
-        );
+        let second_task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
+            tokio::spawn(async move {
+                sender_clone
+                    .request("second", None::<serde_json::Value>)
+                    .await
+            });
 
         let first_request = match client.receiver.next().await.unwrap().unwrap() {
             Message::Request(request) => request,
@@ -519,8 +548,14 @@ mod tests {
             IncomingMessage::ResponseRouted
         ));
 
-        assert_eq!(first_task.await.unwrap().unwrap().result, Some(json!("first")));
-        assert_eq!(second_task.await.unwrap().unwrap().result, Some(json!("second")));
+        assert_eq!(
+            first_task.await.unwrap().unwrap().result,
+            Some(json!("first"))
+        );
+        assert_eq!(
+            second_task.await.unwrap().unwrap().result,
+            Some(json!("second"))
+        );
     }
 
     #[tokio::test]
@@ -538,7 +573,10 @@ mod tests {
             other => panic!("expected request, got {other:?}"),
         };
 
-        let routed = server.route(Message::Response(Response::ok(request_id.clone(), json!(true))));
+        let routed = server.route(Message::Response(Response::ok(
+            request_id.clone(),
+            json!(true),
+        )));
         assert!(matches!(routed, IncomingMessage::ResponseRouted));
 
         let response = task.await.unwrap().unwrap();
@@ -581,7 +619,11 @@ mod tests {
 
         let task = tokio::spawn(async move {
             sender
-                .request_timeout("late-response", None::<serde_json::Value>, Duration::from_millis(10))
+                .request_timeout(
+                    "late-response",
+                    None::<serde_json::Value>,
+                    Duration::from_millis(10),
+                )
                 .await
         });
 
@@ -593,7 +635,10 @@ mod tests {
         let result = task.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::RequestTimeout)));
 
-        let routed = server.route(Message::Response(Response::ok(request_id.clone(), json!(true))));
+        let routed = server.route(Message::Response(Response::ok(
+            request_id.clone(),
+            json!(true),
+        )));
         match routed {
             IncomingMessage::ResponseUnknown(response) => {
                 assert_eq!(response.id, Some(request_id));
@@ -609,7 +654,8 @@ mod tests {
         let mut client: Connection<_, (), Response> = Connection::new(client_stream);
         let sender = server.client_sender();
 
-        let task = tokio::spawn(async move { sender.request("aborted", None::<serde_json::Value>).await });
+        let task =
+            tokio::spawn(async move { sender.request("aborted", None::<serde_json::Value>).await });
 
         let request_id = match client.receiver.next().await.unwrap().unwrap() {
             Message::Request(request) => request.id,
@@ -619,7 +665,10 @@ mod tests {
         task.abort();
         let _ = task.await;
 
-        let routed = server.route(Message::Response(Response::ok(request_id.clone(), json!(true))));
+        let routed = server.route(Message::Response(Response::ok(
+            request_id.clone(),
+            json!(true),
+        )));
         match routed {
             IncomingMessage::ResponseUnknown(response) => {
                 assert_eq!(response.id, Some(request_id));
@@ -653,10 +702,14 @@ mod tests {
             .store(i64::from(i32::MAX), Ordering::Relaxed);
 
         let max_sender = sender.clone();
-        let max_task = tokio::spawn(async move { max_sender.request("max", None::<serde_json::Value>).await });
+        let max_task =
+            tokio::spawn(async move { max_sender.request("max", None::<serde_json::Value>).await });
         let wrapped_sender = sender.clone();
-        let wrapped_task =
-            tokio::spawn(async move { wrapped_sender.request("wrapped", None::<serde_json::Value>).await });
+        let wrapped_task = tokio::spawn(async move {
+            wrapped_sender
+                .request("wrapped", None::<serde_json::Value>)
+                .await
+        });
 
         let second_request = match client.receiver.next().await.unwrap().unwrap() {
             Message::Request(request) => request,
@@ -668,25 +721,46 @@ mod tests {
         };
 
         assert_ne!(second_request.id, first_request.id);
-        assert_ne!(third_request.id, first_request.id, "wrapped request reused an active pending id");
+        assert_ne!(
+            third_request.id, first_request.id,
+            "wrapped request reused an active pending id"
+        );
         assert_ne!(second_request.id, third_request.id);
 
         assert!(matches!(
-            server.route(Message::Response(Response::ok(first_request.id.clone(), json!("first")))),
+            server.route(Message::Response(Response::ok(
+                first_request.id.clone(),
+                json!("first")
+            ))),
             IncomingMessage::ResponseRouted
         ));
         assert!(matches!(
-            server.route(Message::Response(Response::ok(second_request.id.clone(), json!("second")))),
+            server.route(Message::Response(Response::ok(
+                second_request.id.clone(),
+                json!("second")
+            ))),
             IncomingMessage::ResponseRouted
         ));
         assert!(matches!(
-            server.route(Message::Response(Response::ok(third_request.id.clone(), json!("third")))),
+            server.route(Message::Response(Response::ok(
+                third_request.id.clone(),
+                json!("third")
+            ))),
             IncomingMessage::ResponseRouted
         ));
 
-        assert_eq!(first_task.await.unwrap().unwrap().result, Some(json!("first")));
-        assert_eq!(max_task.await.unwrap().unwrap().result, Some(json!("second")));
-        assert_eq!(wrapped_task.await.unwrap().unwrap().result, Some(json!("third")));
+        assert_eq!(
+            first_task.await.unwrap().unwrap().result,
+            Some(json!("first"))
+        );
+        assert_eq!(
+            max_task.await.unwrap().unwrap().result,
+            Some(json!("second"))
+        );
+        assert_eq!(
+            wrapped_task.await.unwrap().unwrap().result,
+            Some(json!("third"))
+        );
     }
 
     #[tokio::test]
@@ -699,11 +773,16 @@ mod tests {
         let timeout_sender = sender.clone();
         let timeout_task = tokio::spawn(async move {
             timeout_sender
-                .request_timeout("timeout", None::<serde_json::Value>, Duration::from_millis(10))
+                .request_timeout(
+                    "timeout",
+                    None::<serde_json::Value>,
+                    Duration::from_millis(10),
+                )
                 .await
         });
         let ok_sender = sender.clone();
-        let ok_task = tokio::spawn(async move { ok_sender.request("ok", None::<serde_json::Value>).await });
+        let ok_task =
+            tokio::spawn(async move { ok_sender.request("ok", None::<serde_json::Value>).await });
 
         let first_request = match client.receiver.next().await.unwrap().unwrap() {
             Message::Request(request) => request,
@@ -724,12 +803,18 @@ mod tests {
         assert!(matches!(result, Err(ProtocolError::RequestTimeout)));
 
         assert!(matches!(
-            server.route(Message::Response(Response::ok(live_request.id.clone(), json!("ok")))),
+            server.route(Message::Response(Response::ok(
+                live_request.id.clone(),
+                json!("ok")
+            ))),
             IncomingMessage::ResponseRouted
         ));
         assert_eq!(ok_task.await.unwrap().unwrap().result, Some(json!("ok")));
 
-        let routed = server.route(Message::Response(Response::ok(timed_out.id.clone(), json!("late"))));
+        let routed = server.route(Message::Response(Response::ok(
+            timed_out.id.clone(),
+            json!("late"),
+        )));
         assert!(matches!(routed, IncomingMessage::ResponseUnknown(_)));
     }
 
