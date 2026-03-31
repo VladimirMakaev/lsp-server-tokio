@@ -198,6 +198,7 @@ pub enum ExitCode {
 /// assert!(err.to_string().contains("disconnected"));
 /// ```
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProtocolError {
     /// Expected `initialize` request, but received a different message.
     ///

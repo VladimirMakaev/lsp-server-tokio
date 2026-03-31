@@ -17,6 +17,21 @@ use serde_json::Value;
 use crate::error::ResponseError;
 use crate::request_id::RequestId;
 
+const JSONRPC_VERSION: &str = "2.0";
+
+fn validate_jsonrpc_field<E>(jsonrpc: &str) -> Result<(), E>
+where
+    E: serde::de::Error,
+{
+    if jsonrpc == JSONRPC_VERSION {
+        Ok(())
+    } else {
+        Err(E::custom(format!(
+            "expected jsonrpc field to equal \"{JSONRPC_VERSION}\", got \"{jsonrpc}\""
+        )))
+    }
+}
+
 /// A JSON-RPC 2.0 request message.
 ///
 /// Requests have an `id` that is used to correlate responses, a `method` name,
@@ -33,16 +48,13 @@ use crate::request_id::RequestId;
 /// assert_eq!(req.id, 1.into());
 /// assert_eq!(req.method, "textDocument/completion");
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Request {
-    /// The JSON-RPC protocol version. Always "2.0".
-    pub jsonrpc: String,
     /// The request id used to correlate request and response.
     pub id: RequestId,
     /// The method to be invoked.
     pub method: String,
     /// The method's params.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
@@ -52,11 +64,53 @@ impl Request {
     /// The `jsonrpc` field is automatically set to "2.0".
     pub fn new(id: impl Into<RequestId>, method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
             id: id.into(),
             method: method.into(),
             params,
         }
+    }
+}
+
+impl Serialize for Request {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let field_count = if self.params.is_some() { 4 } else { 3 };
+        let mut state = serializer.serialize_struct("Request", field_count)?;
+        state.serialize_field("jsonrpc", JSONRPC_VERSION)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("method", &self.method)?;
+
+        if let Some(params) = &self.params {
+            state.serialize_field("params", params)?;
+        }
+
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Request {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RequestRepr {
+            jsonrpc: String,
+            id: RequestId,
+            method: String,
+            params: Option<Value>,
+        }
+
+        let repr = RequestRepr::deserialize(deserializer)?;
+        validate_jsonrpc_field::<D::Error>(&repr.jsonrpc)?;
+
+        Ok(Self {
+            id: repr.id,
+            method: repr.method,
+            params: repr.params,
+        })
     }
 }
 
@@ -111,8 +165,6 @@ pub enum ResponseBody {
 /// A JSON-RPC 2.0 response message.
 #[derive(Debug, Clone)]
 pub struct Response {
-    /// The JSON-RPC protocol version. Always "2.0".
-    jsonrpc: String,
     /// The request id. None for parse error responses.
     pub id: Option<RequestId>,
     /// The response payload, which is either a result or an error.
@@ -125,7 +177,7 @@ impl Serialize for Response {
         S: serde::Serializer,
     {
         let mut state = serializer.serialize_struct("Response", 3)?;
-        state.serialize_field("jsonrpc", &self.jsonrpc)?;
+        state.serialize_field("jsonrpc", JSONRPC_VERSION)?;
         if let Some(id) = &self.id {
             state.serialize_field("id", id)?;
         }
@@ -181,8 +233,8 @@ impl<'de> Deserialize<'de> for Response {
         let jsonrpc = obj
             .get("jsonrpc")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| D::Error::custom("missing jsonrpc field"))?
-            .to_string();
+            .ok_or_else(|| D::Error::custom("missing jsonrpc field"))?;
+        validate_jsonrpc_field::<D::Error>(jsonrpc)?;
 
         // Extract id (can be null/absent for parse errors)
         let id = if let Some(id_val) = obj.get("id") {
@@ -207,7 +259,7 @@ impl<'de> Deserialize<'de> for Response {
             )
         };
 
-        Ok(Response { jsonrpc, id, body })
+        Ok(Response { id, body })
     }
 }
 
@@ -216,7 +268,6 @@ impl Response {
     #[must_use]
     pub fn ok(id: impl Into<RequestId>, result: Value) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
             id: Some(id.into()),
             body: ResponseBody::Success(result),
         }
@@ -226,7 +277,6 @@ impl Response {
     #[must_use]
     pub fn err(id: impl Into<RequestId>, error: ResponseError) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
             id: Some(id.into()),
             body: ResponseBody::Error(error),
         }
@@ -238,7 +288,6 @@ impl Response {
     #[must_use]
     pub fn parse_error(error: ResponseError) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
             id: None,
             body: ResponseBody::Error(error),
         }
@@ -247,7 +296,7 @@ impl Response {
     /// Returns the JSON-RPC protocol version for this response.
     #[must_use]
     pub fn jsonrpc(&self) -> &str {
-        &self.jsonrpc
+        JSONRPC_VERSION
     }
 
     /// Returns the response body.
@@ -308,14 +357,11 @@ impl Response {
 /// let notif = Notification::new("textDocument/didOpen", Some(json!({"textDocument": {"uri": "file:///test.rs"}})));
 /// assert_eq!(notif.method, "textDocument/didOpen");
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Notification {
-    /// The JSON-RPC protocol version. Always "2.0".
-    pub jsonrpc: String,
     /// The method to be invoked.
     pub method: String,
     /// The notification's params.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
@@ -325,10 +371,49 @@ impl Notification {
     /// The `jsonrpc` field is automatically set to "2.0".
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
-            jsonrpc: "2.0".to_string(),
             method: method.into(),
             params,
         }
+    }
+}
+
+impl Serialize for Notification {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let field_count = if self.params.is_some() { 3 } else { 2 };
+        let mut state = serializer.serialize_struct("Notification", field_count)?;
+        state.serialize_field("jsonrpc", JSONRPC_VERSION)?;
+        state.serialize_field("method", &self.method)?;
+
+        if let Some(params) = &self.params {
+            state.serialize_field("params", params)?;
+        }
+
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Notification {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct NotificationRepr {
+            jsonrpc: String,
+            method: String,
+            params: Option<Value>,
+        }
+
+        let repr = NotificationRepr::deserialize(deserializer)?;
+        validate_jsonrpc_field::<D::Error>(&repr.jsonrpc)?;
+
+        Ok(Self {
+            method: repr.method,
+            params: repr.params,
+        })
     }
 }
 
@@ -413,7 +498,7 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let parsed: Request = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.jsonrpc, "2.0");
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert_eq!(parsed.id, RequestId::Integer(1));
         assert_eq!(parsed.method, "test/method");
         assert!(parsed.params.is_none());
@@ -449,6 +534,20 @@ mod tests {
         assert_eq!(parsed.id, RequestId::String("abc-123".to_string()));
     }
 
+    #[test]
+    fn request_deserialization_rejects_missing_jsonrpc() {
+        let json = r#"{"id":1,"method":"test"}"#;
+        let error = serde_json::from_str::<Request>(json).unwrap_err();
+        assert!(error.to_string().contains("missing field `jsonrpc`"));
+    }
+
+    #[test]
+    fn request_deserialization_rejects_wrong_jsonrpc_version() {
+        let json = r#"{"jsonrpc":"1.0","id":1,"method":"test"}"#;
+        let error = serde_json::from_str::<Request>(json).unwrap_err();
+        assert!(error.to_string().contains("expected jsonrpc field to equal \"2.0\""));
+    }
+
     // ============== Response Tests ==============
 
     #[test]
@@ -462,6 +561,19 @@ mod tests {
         assert_eq!(parsed.id, Some(RequestId::Integer(1)));
         assert_eq!(parsed.result().unwrap(), &result);
         assert!(parsed.error().is_none());
+    }
+
+    #[test]
+    fn response_serialization_hardcodes_jsonrpc_version() {
+        let json = serde_json::to_string(&Response::ok(1, json!(null))).unwrap();
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+    }
+
+    #[test]
+    fn response_deserialization_rejects_missing_jsonrpc() {
+        let json = r#"{"id":1,"result":null}"#;
+        let error = serde_json::from_str::<Response>(json).unwrap_err();
+        assert!(error.to_string().contains("missing jsonrpc field"));
     }
 
     #[test]
@@ -524,7 +636,7 @@ mod tests {
         let json = serde_json::to_string(&notif).unwrap();
         let parsed: Notification = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.jsonrpc, "2.0");
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert_eq!(parsed.method, "textDocument/didOpen");
         assert!(parsed.params.is_none());
     }
@@ -538,6 +650,13 @@ mod tests {
 
         assert_eq!(parsed.method, "textDocument/didOpen");
         assert_eq!(parsed.params.unwrap(), params);
+    }
+
+    #[test]
+    fn notification_deserialization_rejects_wrong_jsonrpc_version() {
+        let json = r#"{"jsonrpc":"1.0","method":"test"}"#;
+        let error = serde_json::from_str::<Notification>(json).unwrap_err();
+        assert!(error.to_string().contains("expected jsonrpc field to equal \"2.0\""));
     }
 
     #[test]

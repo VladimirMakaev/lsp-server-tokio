@@ -118,6 +118,38 @@ pub enum IncomingMessage {
     ResponseUnknown(Response),
 }
 
+impl IncomingMessage {
+    /// Returns `true` if this message is a routed request.
+    #[must_use]
+    pub fn is_request(&self) -> bool {
+        matches!(self, Self::Request(_, _))
+    }
+
+    /// Returns `true` if this message is a notification.
+    #[must_use]
+    pub fn is_notification(&self) -> bool {
+        matches!(self, Self::Notification(_))
+    }
+
+    /// Returns `true` if this message is a response routed to a pending request.
+    #[must_use]
+    pub fn is_response_routed(&self) -> bool {
+        matches!(self, Self::ResponseRouted)
+    }
+
+    /// Returns `true` if this message is a response for an unknown request.
+    #[must_use]
+    pub fn is_response_unknown(&self) -> bool {
+        matches!(self, Self::ResponseUnknown(_))
+    }
+
+    /// Returns `true` if this message is an automatically handled cancellation notification.
+    #[must_use]
+    pub fn is_cancel_handled(&self) -> bool {
+        matches!(self, Self::CancelHandled)
+    }
+}
+
 /// Creates a `MethodNotFound` error response for an unhandled request.
 ///
 /// This helper creates a properly formatted JSON-RPC 2.0 error response
@@ -262,6 +294,28 @@ mod tests {
 
         let cancel_debug = format!("{:?}", IncomingMessage::CancelHandled);
         assert!(cancel_debug.contains("CancelHandled"));
+    }
+
+    #[test]
+    fn incoming_message_accessors_match_variants() {
+        let request = IncomingMessage::Request(Request::new(1, "test", None), CancellationToken::new());
+        assert!(request.is_request());
+        assert!(!request.is_notification());
+        assert!(!request.is_response_routed());
+        assert!(!request.is_response_unknown());
+        assert!(!request.is_cancel_handled());
+
+        let notification = IncomingMessage::Notification(Notification::new("test", None));
+        assert!(notification.is_notification());
+
+        let routed = IncomingMessage::ResponseRouted;
+        assert!(routed.is_response_routed());
+
+        let unknown = IncomingMessage::ResponseUnknown(Response::ok(1, json!(null)));
+        assert!(unknown.is_response_unknown());
+
+        let cancelled = IncomingMessage::CancelHandled;
+        assert!(cancelled.is_cancel_handled());
     }
 
     // ============== cancelled_response Tests ==============
