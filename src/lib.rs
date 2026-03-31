@@ -62,6 +62,7 @@
 //! - [`IncomingMessage::ResponseRouted`] - A response delivered to an awaiting receiver
 //! - [`IncomingMessage::ResponseUnknown`] - A response for an unknown request ID
 
+pub mod client_sender;
 pub mod codec;
 pub mod connection;
 pub mod error;
@@ -72,6 +73,7 @@ pub mod request_queue;
 pub mod routing;
 pub mod transport;
 
+pub use client_sender::{ClientSender, SendError};
 pub use codec::LspCodec;
 pub use connection::{Connection, Receiver, Sender, StdioConnection};
 pub use error::{ErrorCode, ResponseError};
