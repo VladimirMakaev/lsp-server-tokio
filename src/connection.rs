@@ -168,7 +168,7 @@ pub type Receiver<T> = SplitStream<Transport<T>>;
 ///
 /// - `T`: The underlying I/O stream type (`AsyncRead + AsyncWrite`)
 /// - `I`: Metadata type for incoming requests (default: `()`)
-/// Outgoing requests always resolve to [`Response`].
+///   Outgoing requests always resolve to [`Response`].
 ///
 /// # Examples
 ///
@@ -488,7 +488,7 @@ where
             Message::Notification(notif) => {
                 if notif.method == crate::request_queue::CANCEL_REQUEST_METHOD {
                     if let Some(id) = crate::parse_cancel_params(&notif.params) {
-                        self.request_queue.incoming.cancel(&id);
+                        let _ = self.request_queue.incoming.cancel(&id);
                     }
                     crate::IncomingMessage::CancelHandled
                 } else {
@@ -748,9 +748,13 @@ where
     /// let mut conn: Connection<_, ()> = Connection::new(stream);
     ///
     /// let (id, params) = conn.initialize_start().await.unwrap();
-    /// // Process params, build capabilities...
+    /// // Process params, build the full InitializeResult payload...
     /// let capabilities = serde_json::json!({"textDocumentSync": 1});
-    /// conn.initialize_finish(id, capabilities).await.unwrap();
+    /// let result = serde_json::json!({
+    ///     "capabilities": capabilities,
+    ///     "serverInfo": {"name": "my-server", "version": "0.1.0"}
+    /// });
+    /// conn.initialize_finish(id, result).await.unwrap();
     /// # });
     /// ```
     pub async fn initialize_start(
