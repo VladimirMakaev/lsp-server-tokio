@@ -10,9 +10,9 @@
 //! # Overview
 //!
 //! A [`Connection`] is constructed from any `AsyncRead + AsyncWrite` stream and
-//! provides separate [`Sender`] and [`Receiver`] halves that can be used independently
-//! in concurrent async tasks. It also contains a [`RequestQueue`] for tracking
-//! pending requests.
+//! provides a [`send()`](Connection::send) method for outbound messages and a public
+//! [`receiver`](Connection::receiver) field for inbound messages. It also contains
+//! a [`RequestQueue`] for tracking pending requests.
 //!
 //! # Examples
 //!
@@ -31,7 +31,7 @@
 //!
 //! // Send a request from client
 //! let request = Message::Request(Request::new(1, "textDocument/hover", None));
-//! client.sender().send(request).await.unwrap();
+//! client.send(request).unwrap();
 //!
 //! // Receive on server
 //! let msg = server.receiver.next().await.unwrap().unwrap();
@@ -66,7 +66,7 @@
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! // Create a connection over stdin/stdout for typical LSP server usage
 //! let conn = Connection::stdio();
-//! // Use conn.sender() to write responses, conn.receiver to read requests
+//! // Use conn.send() to write responses, conn.receiver to read requests
 //! # });
 //! ```
 
@@ -74,7 +74,7 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::stream::{SplitSink, SplitStream};
+use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, Stdin, Stdout};
@@ -100,29 +100,6 @@ use crate::{transport, Message, RequestQueue, Transport};
 /// let conn: StdioConnection<String, String> = Connection::new(StdioTransport::new());
 /// ```
 pub type StdioConnection<I = (), O = ()> = Connection<StdioTransport, I, O>;
-
-/// The sender half of an LSP connection.
-///
-/// This type can be used to send LSP messages over the transport.
-/// It implements `Sink<Message, Error=io::Error>`.
-///
-/// # Example
-///
-/// ```
-/// use futures::SinkExt;
-/// use lsp_server_tokio::{Connection, Message, Request, Sender};
-///
-/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-/// let (client_stream, server_stream) = tokio::io::duplex(4096);
-/// let client: Connection<_, (), ()> = Connection::new(client_stream);
-/// let _server: Connection<_, (), ()> = Connection::new(server_stream);
-///
-/// // Move sender to a task
-/// let mut sender: Sender<_> = client.into_sender();
-/// sender.send(Message::Request(Request::new(1, "test", None))).await.unwrap();
-/// # });
-/// ```
-pub type Sender<T> = SplitSink<Transport<T>, Message>;
 
 /// The receiver half of an LSP connection.
 ///
@@ -150,12 +127,13 @@ pub type Receiver<T> = SplitStream<Transport<T>>;
 ///
 /// `Connection` is the primary type for LSP communication. It provides:
 ///
-/// - [`sender()`](Connection::sender): A sink for sending outbound messages
+/// - [`send()`](Connection::send): Send outbound messages (non-blocking, channel-based)
 /// - [`receiver`](Connection::receiver): A stream for receiving inbound messages
 /// - [`request_queue`](Connection::request_queue): Tracking for pending requests
 ///
-/// The sender and receiver can be moved to separate async tasks for concurrent
-/// bidirectional communication.
+/// At construction, a background drain task is spawned to forward messages from
+/// an internal channel to the underlying transport. This means [`send()`](Connection::send)
+/// never blocks on I/O — it only enqueues the message.
 ///
 /// # Type Parameters
 ///
@@ -170,10 +148,12 @@ pub type Receiver<T> = SplitStream<Transport<T>>;
 /// ```
 /// use lsp_server_tokio::Connection;
 ///
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 /// let (stream, _) = tokio::io::duplex(4096);
 ///
 /// // Simple connection with unit metadata types
 /// let conn: Connection<_, (), ()> = Connection::new(stream);
+/// # });
 /// ```
 ///
 /// ## With custom metadata types
@@ -181,19 +161,22 @@ pub type Receiver<T> = SplitStream<Transport<T>>;
 /// ```
 /// use lsp_server_tokio::Connection;
 ///
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 /// let (stream, _) = tokio::io::duplex(4096);
 ///
 /// // Connection tracking method names for incoming, JSON values for outgoing
 /// let conn: Connection<_, String, serde_json::Value> = Connection::new(stream);
+/// # });
 /// ```
 pub struct Connection<T, I = (), O = ()>
 where
     T: AsyncRead + AsyncWrite,
 {
-    /// The sender half for outbound messages.
+    /// Channel for sending outbound messages to the background drain task.
     ///
-    /// Use this to send requests, responses, and notifications to the other end.
-    sender: Option<Sender<T>>,
+    /// The drain task forwards messages to the underlying transport sink.
+    /// This channel is always available — no `Option`, no "taken" state.
+    outbound_tx: mpsc::UnboundedSender<Message>,
 
     /// The receiver half for inbound messages.
     ///
@@ -212,34 +195,41 @@ where
     /// Cancellation token that is triggered when shutdown is requested.
     shutdown_token: CancellationToken,
 
-    /// Background outbound channel used after upgrading to [`ClientSender`].
-    outbound_tx: Option<mpsc::UnboundedSender<Message>>,
-
     /// Shared response routing state used by [`ClientSender`], if enabled.
     response_map: Option<ResponseMap>,
+
+    /// Cancellation token that is triggered when the background drain task exits.
+    ///
+    /// The drain task holds a [`DropGuard`] for this token. When the task exits
+    /// (e.g., because the transport is broken), the token is cancelled, which
+    /// allows [`ClientSender::request`] to detect disconnection instead of
+    /// hanging forever waiting for a response that will never arrive.
+    drain_alive: CancellationToken,
 }
 
 impl<T, I, O> Connection<T, I, O>
 where
-    T: AsyncRead + AsyncWrite,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     /// Creates a new connection from an async I/O stream.
     ///
     /// This constructor wraps the stream with [`crate::LspCodec`] for Content-Length
-    /// framing, splits it into sender/receiver halves, and creates an empty
-    /// request queue.
+    /// framing, splits it into sender/receiver halves, and spawns a background
+    /// drain task for outbound messages.
     ///
     /// # Arguments
     ///
-    /// * `io` - Any async I/O stream implementing `AsyncRead + AsyncWrite`
+    /// * `io` - Any async I/O stream implementing `AsyncRead + AsyncWrite + Unpin + Send + 'static`
     ///
     /// # Example
     ///
     /// ```
     /// use lsp_server_tokio::Connection;
     ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
     /// let (stream, _) = tokio::io::duplex(4096);
     /// let conn: Connection<_, (), ()> = Connection::new(stream);
+    /// # });
     /// ```
     pub fn new(io: T) -> Self {
         let transport = transport(io);
@@ -260,20 +250,35 @@ where
     /// ```
     /// use lsp_server_tokio::{transport, Connection};
     ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
     /// let (stream, _) = tokio::io::duplex(4096);
     /// let transport = transport(stream);
     /// let conn: Connection<_, (), ()> = Connection::from_transport(transport);
+    /// # });
     /// ```
     pub fn from_transport(transport: Transport<T>) -> Self {
-        let (sender, receiver) = transport.split();
+        let (mut sender, receiver) = transport.split();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let drain_alive = CancellationToken::new();
+        let drain_guard = drain_alive.clone().drop_guard();
+
+        tokio::spawn(async move {
+            let _guard = drain_guard;
+            while let Some(message) = rx.recv().await {
+                if sender.send(message).await.is_err() {
+                    return;
+                }
+            }
+        });
+
         Self {
-            sender: Some(sender),
+            outbound_tx: tx,
             receiver,
             request_queue: RequestQueue::new(),
             lifecycle_state: LifecycleState::default(),
             shutdown_token: CancellationToken::new(),
-            outbound_tx: None,
             response_map: None,
+            drain_alive,
         }
     }
 
@@ -295,6 +300,7 @@ where
     /// ```
     /// use lsp_server_tokio::{Connection, RequestQueue};
     ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
     /// let (stream, _) = tokio::io::duplex(4096);
     ///
     /// // Create a queue with some pre-registered requests
@@ -305,41 +311,33 @@ where
     ///
     /// let conn = Connection::with_request_queue(stream, queue);
     /// assert!(conn.request_queue.incoming.is_pending(&1.into()));
+    /// # });
     /// ```
     pub fn with_request_queue(io: T, request_queue: RequestQueue<I, O>) -> Self {
         let transport = transport(io);
-        let (sender, receiver) = transport.split();
+        let (mut sender, receiver) = transport.split();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let drain_alive = CancellationToken::new();
+        let drain_guard = drain_alive.clone().drop_guard();
+
+        tokio::spawn(async move {
+            let _guard = drain_guard;
+            while let Some(message) = rx.recv().await {
+                if sender.send(message).await.is_err() {
+                    return;
+                }
+            }
+        });
+
         Self {
-            sender: Some(sender),
+            outbound_tx: tx,
             receiver,
             request_queue,
             lifecycle_state: LifecycleState::default(),
             shutdown_token: CancellationToken::new(),
-            outbound_tx: None,
             response_map: None,
+            drain_alive,
         }
-    }
-
-    /// Returns a mutable reference to the sender half.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the sender has already been taken by [`Connection::client_sender()`]
-    /// or [`Connection::into_sender()`].
-    pub fn sender(&mut self) -> &mut Sender<T> {
-        self.sender.as_mut().expect(
-            "connection sender already taken; use ClientSender after calling client_sender()",
-        )
-    }
-
-    /// Consumes the connection and returns ownership of the sender half.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the sender has already been taken by [`Connection::client_sender()`].
-    pub fn into_sender(self) -> Sender<T> {
-        self.sender
-            .expect("connection sender already taken; ClientSender owns outbound traffic")
     }
 
     /// Returns the current lifecycle state.
@@ -389,23 +387,40 @@ where
     pub fn on_shutdown(&self) -> impl std::future::Future<Output = ()> + '_ {
         self.shutdown_token.cancelled()
     }
+}
 
-    async fn send_message(&mut self, message: Message) -> Result<(), io::Error>
-    where
-        T: Unpin,
-    {
-        if let Some(sender) = self.sender.as_mut() {
-            sender.send(message).await
-        } else if let Some(outbound_tx) = self.outbound_tx.as_ref() {
-            outbound_tx
-                .send(message)
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "connection sender already taken",
-            ))
-        }
+// Methods that only use the channel (no transport bounds needed beyond the struct constraint)
+impl<T, I, O> Connection<T, I, O>
+where
+    T: AsyncRead + AsyncWrite,
+{
+    /// Sends a message through the connection.
+    ///
+    /// Messages are forwarded to the background drain task which writes them
+    /// to the underlying transport. This method never blocks on I/O — it only
+    /// enqueues the message on an unbounded channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the background drain task has exited (connection closed).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::{Connection, Message, Request};
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (client_stream, _server_stream) = tokio::io::duplex(4096);
+    /// let conn: Connection<_, (), ()> = Connection::new(client_stream);
+    ///
+    /// let request = Message::Request(Request::new(1, "test", None));
+    /// conn.send(request).unwrap();
+    /// # });
+    /// ```
+    pub fn send(&self, message: Message) -> Result<(), io::Error> {
+        self.outbound_tx
+            .send(message)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))
     }
 }
 
@@ -532,47 +547,42 @@ where
         self.request_queue.incoming.cancel(&id.into())
     }
 
-    /// Upgrades outbound communication to a cloneable [`ClientSender`].
+    /// Returns a cloneable [`ClientSender`] for sending requests, responses,
+    /// and notifications.
     ///
-    /// This consumes the underlying transport sink, spawns a background drain task,
-    /// and routes future responses through an internal response map. After this
-    /// call, all outbound messages must go through the returned [`ClientSender`].
+    /// The first call initializes the response routing infrastructure.
+    /// Subsequent calls return a new handle to the same underlying channel.
     ///
-    /// # Panics
+    /// # Example
     ///
-    /// Panics if the sender has already been taken.
+    /// ```
+    /// use lsp_server_tokio::{Connection, Response};
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (stream, _) = tokio::io::duplex(4096);
+    /// let mut conn: Connection<_, (), Response> = Connection::new(stream);
+    ///
+    /// let sender1 = conn.client_sender();
+    /// let sender2 = conn.client_sender(); // returns another handle
+    /// # });
+    /// ```
     #[must_use]
-    pub fn client_sender(&mut self) -> ClientSender
-    where
-        T: Unpin + Send + 'static,
-    {
-        assert!(
-            self.response_map.is_none(),
-            "connection sender already taken; client_sender() can only be called once"
-        );
+    pub fn client_sender(&mut self) -> ClientSender {
+        if let Some(ref response_map) = self.response_map {
+            return ClientSender::new(
+                self.outbound_tx.clone(),
+                response_map.clone(),
+                self.drain_alive.clone(),
+            );
+        }
 
-        let mut sender = self
-            .sender
-            .take()
-            .expect("connection sender already taken; client_sender() can only be called once");
-        let (tx, mut rx) = mpsc::unbounded_channel();
         let response_map = ResponseMap::new();
-        let response_map_task = response_map.clone();
-
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                if sender.send(message).await.is_err() {
-                    response_map_task.cancel_all();
-                    return;
-                }
-            }
-
-            response_map_task.cancel_all();
-        });
-
-        self.outbound_tx = Some(tx.clone());
         self.response_map = Some(response_map.clone());
-        ClientSender::new(tx, response_map)
+        ClientSender::new(
+            self.outbound_tx.clone(),
+            response_map,
+            self.drain_alive.clone(),
+        )
     }
 }
 
@@ -635,7 +645,7 @@ where
 // Outgoing request cancellation methods
 impl<T, I, O> Connection<T, I, O>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite,
 {
     /// Cancels an outgoing request by sending $/cancelRequest and removing it from the queue.
     ///
@@ -672,14 +682,14 @@ where
     /// let rx = conn.request_queue.outgoing.register(42.into());
     ///
     /// // Cancel it
-    /// let was_pending = conn.cancel(42).await.unwrap();
+    /// let was_pending = conn.cancel(42).unwrap();
     /// assert!(was_pending);
     ///
     /// // The receiver will get an error
     /// assert!(rx.await.is_err());
     /// # });
     /// ```
-    pub async fn cancel(
+    pub fn cancel(
         &mut self,
         id: impl Into<crate::RequestId>,
     ) -> Result<bool, std::io::Error> {
@@ -692,8 +702,7 @@ where
             crate::Notification::new(CANCEL_REQUEST_METHOD, Some(serde_json::json!({"id": id})));
 
         // Send the notification
-        self.send_message(Message::Notification(notification))
-            .await?;
+        self.send(Message::Notification(notification))?;
 
         // Cancel in the queue (returns true if was pending)
         Ok(self.request_queue.outgoing.cancel(&id))
@@ -703,7 +712,7 @@ where
 // Lifecycle management methods
 impl<T, I, O> Connection<T, I, O>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite,
 {
     /// Waits for the initialize request from the client.
     ///
@@ -752,7 +761,7 @@ where
                         "Server not yet initialized",
                     );
                     let response = Message::Response(crate::Response::err(req.id, error));
-                    if let Err(e) = self.sender().send(response).await {
+                    if let Err(e) = self.send(response) {
                         return Err(ProtocolError::Io(e));
                     }
                     // Continue waiting for initialize
@@ -824,7 +833,7 @@ where
 
         // Send the response with the full InitializeResult verbatim
         let response = Message::Response(crate::Response::ok(id, initialize_result));
-        if let Err(e) = self.send_message(response).await {
+        if let Err(e) = self.send(response) {
             return Err(ProtocolError::Io(e));
         }
 
@@ -845,7 +854,7 @@ where
                             "Server not yet initialized",
                         );
                         let response = Message::Response(crate::Response::err(req.id, error));
-                        if let Err(e) = self.sender().send(response).await {
+                        if let Err(e) = self.send(response) {
                             return Err(ProtocolError::Io(e));
                         }
                     }
@@ -938,12 +947,12 @@ where
     /// // ... after initialization ...
     /// // When shutdown request is received:
     /// // if let Message::Request(req) = msg && req.method == "shutdown" {
-    /// //     conn.handle_shutdown(req.id).await.unwrap();
+    /// //     conn.handle_shutdown(req.id).unwrap();
     /// //     assert!(conn.is_shutting_down());
     /// // }
     /// # });
     /// ```
-    pub async fn handle_shutdown(&mut self, id: crate::RequestId) -> Result<(), ProtocolError> {
+    pub fn handle_shutdown(&mut self, id: crate::RequestId) -> Result<(), ProtocolError> {
         // Cancel shutdown token first to notify waiting tasks
         self.shutdown_token.cancel();
 
@@ -952,7 +961,7 @@ where
 
         // Send null response
         let response = Message::Response(crate::Response::ok(id, serde_json::Value::Null));
-        if let Err(e) = self.send_message(response).await {
+        if let Err(e) = self.send(response) {
             return Err(ProtocolError::Io(e));
         }
 
@@ -969,12 +978,14 @@ where
     /// ```
     /// use lsp_server_tokio::{Connection, ExitCode, LifecycleState};
     ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
     /// let (stream, _) = tokio::io::duplex(4096);
     /// let mut conn: Connection<_, (), ()> = Connection::new(stream);
     ///
     /// // Exit without shutdown - dirty exit
     /// let code = conn.handle_exit();
     /// assert_eq!(code, ExitCode::Error);
+    /// # });
     /// ```
     pub fn handle_exit(&mut self) -> ExitCode {
         let was_shutting_down = self.lifecycle_state == LifecycleState::ShuttingDown;
@@ -1062,15 +1073,11 @@ where
         params: Option<serde_json::Value>,
         timeout: std::time::Duration,
     ) -> Result<crate::Response, ProtocolError> {
-        if self.sender.is_none() {
-            return Err(ProtocolError::Disconnected);
-        }
-
         let id = id.into();
         let request = crate::Request::new(id.clone(), method, params);
 
         // Send the request
-        if let Err(e) = self.sender().send(Message::Request(request)).await {
+        if let Err(e) = self.send(Message::Request(request)) {
             return Err(ProtocolError::Io(e));
         }
 
@@ -1221,19 +1228,18 @@ impl Connection<StdioTransport, (), ()> {
 mod tests {
     use super::*;
     use crate::{Request, Response, StdioConnection};
-    use futures::SinkExt;
     use serde_json::json;
     use std::time::Duration;
 
     #[tokio::test]
     async fn connection_from_duplex_test() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let client: Connection<_, (), ()> = Connection::new(client_stream);
         let mut server: Connection<_, (), ()> = Connection::new(server_stream);
 
         // Send request from client
         let request = Message::Request(Request::new(1, "test", None));
-        client.sender().send(request).await.unwrap();
+        client.send(request).unwrap();
 
         // Receive on server
         let received = server.receiver.next().await.unwrap().unwrap();
@@ -1261,7 +1267,7 @@ mod tests {
                 "position": {"line": 10, "character": 5}
             })),
         ));
-        client.sender().send(request).await.unwrap();
+        client.send(request).unwrap();
 
         // Server receives request
         let received = server.receiver.next().await.unwrap().unwrap();
@@ -1274,7 +1280,7 @@ mod tests {
                 "contents": "fn main()"
             }),
         ));
-        server.sender().send(response).await.unwrap();
+        server.send(response).unwrap();
 
         // Client receives response
         let received = client.receiver.next().await.unwrap().unwrap();
@@ -1296,12 +1302,12 @@ mod tests {
         let server_transport = transport(server_stream);
 
         // Create connections from transports
-        let mut client: Connection<_, (), ()> = Connection::from_transport(client_transport);
+        let client: Connection<_, (), ()> = Connection::from_transport(client_transport);
         let mut server: Connection<_, (), ()> = Connection::from_transport(server_transport);
 
         // Verify functionality
         let request = Message::Request(Request::new(42, "test", None));
-        client.sender().send(request).await.unwrap();
+        client.send(request).unwrap();
 
         let received = server.receiver.next().await.unwrap().unwrap();
         assert!(received.is_request());
@@ -1313,7 +1319,7 @@ mod tests {
     #[tokio::test]
     async fn connection_multiple_messages_test() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let client: Connection<_, (), ()> = Connection::new(client_stream);
         let mut server: Connection<_, (), ()> = Connection::new(server_stream);
 
         // Send 3 messages in sequence
@@ -1321,9 +1327,9 @@ mod tests {
         let msg2 = Message::Request(Request::new(2, "second", None));
         let msg3 = Message::Request(Request::new(3, "third", None));
 
-        client.sender().send(msg1).await.unwrap();
-        client.sender().send(msg2).await.unwrap();
-        client.sender().send(msg3).await.unwrap();
+        client.send(msg1).unwrap();
+        client.send(msg2).unwrap();
+        client.send(msg3).unwrap();
 
         // Receive all 3 - order must be preserved
         let recv1 = server.receiver.next().await.unwrap().unwrap();
@@ -1358,16 +1364,12 @@ mod tests {
         let client: Connection<_, (), ()> = Connection::new(client_stream);
         let server: Connection<_, (), ()> = Connection::new(server_stream);
 
-        // Move sender and receiver to separate tasks
-        let mut client_sender = client.into_sender();
-        let mut server_receiver = server.receiver;
-
+        // Send from one task, receive from another
         let send_task = tokio::spawn(async move {
-            client_sender
-                .send(Message::Request(Request::new(1, "test", None)))
-                .await
+            client.send(Message::Request(Request::new(1, "test", None)))
         });
 
+        let mut server_receiver = server.receiver;
         let recv_task = tokio::spawn(async move { server_receiver.next().await });
 
         let (send_result, recv_result) = tokio::join!(send_task, recv_task);
@@ -1451,7 +1453,7 @@ mod tests {
         let init_params = json!({"processId": 1234, "capabilities": {}});
         let init_request =
             Message::Request(Request::new(1, "initialize", Some(init_params.clone())));
-        client.sender().send(init_request).await.unwrap();
+        client.send(init_request).unwrap();
 
         // Server waits for initialize
         let (id, params) = server.initialize_start().await.unwrap();
@@ -1478,7 +1480,7 @@ mod tests {
 
         // Client sends initialized notification
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.send(initialized).unwrap();
 
         // Server's initialize_finish completes
         let server = server_task.await.unwrap();
@@ -1486,8 +1488,8 @@ mod tests {
         assert_eq!(server.lifecycle_state(), LifecycleState::Running);
     }
 
-    #[test]
-    fn stdio_connection_alias_constructs_with_custom_metadata() {
+    #[tokio::test]
+    async fn stdio_connection_alias_constructs_with_custom_metadata() {
         let conn: StdioConnection<String, Response> = Connection::new(StdioTransport::new());
 
         assert_eq!(conn.lifecycle_state(), LifecycleState::Uninitialized);
@@ -1503,7 +1505,7 @@ mod tests {
 
         // Client sends a non-initialize request first
         let hover_request = Message::Request(Request::new(1, "textDocument/hover", None));
-        client.sender().send(hover_request).await.unwrap();
+        client.send(hover_request).unwrap();
 
         // Spawn server's initialize_start
         let server_task = tokio::spawn(async move {
@@ -1523,7 +1525,7 @@ mod tests {
 
         // Now client sends initialize - should be accepted
         let init_request = Message::Request(Request::new(2, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.send(init_request).unwrap();
 
         let server = server_task.await.unwrap();
         assert_eq!(server.lifecycle_state(), LifecycleState::Initializing);
@@ -1536,9 +1538,7 @@ mod tests {
         let mut server: Connection<_, (), ()> = Connection::new(server_stream);
 
         client
-            .sender()
             .send(Message::Request(Request::new(1, "initialize", None)))
-            .await
             .unwrap();
 
         let (id, _params) = server.initialize_start().await.unwrap();
@@ -1561,16 +1561,16 @@ mod tests {
     #[tokio::test]
     async fn test_initialize_drops_notifications() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let client: Connection<_, (), ()> = Connection::new(client_stream);
         let mut server: Connection<_, (), ()> = Connection::new(server_stream);
 
         // Client sends random notification before init
         let random_notif = Message::Notification(Notification::new("textDocument/didOpen", None));
-        client.sender().send(random_notif).await.unwrap();
+        client.send(random_notif).unwrap();
 
         // Client sends initialize request
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.send(init_request).unwrap();
 
         // Server's initialize_start should skip notification and find initialize
         let (id, _params) = server.initialize_start().await.unwrap();
@@ -1581,12 +1581,12 @@ mod tests {
     #[tokio::test]
     async fn test_exit_during_init_disconnects() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+        let client: Connection<_, (), ()> = Connection::new(client_stream);
         let mut server: Connection<_, (), ()> = Connection::new(server_stream);
 
         // Client sends exit notification instead of initialize
         let exit_notif = Message::Notification(Notification::new("exit", None));
-        client.sender().send(exit_notif).await.unwrap();
+        client.send(exit_notif).unwrap();
 
         // Server's initialize_start should return Disconnected
         let result = server.initialize_start().await;
@@ -1601,7 +1601,7 @@ mod tests {
 
         // Complete initialization
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.send(init_request).unwrap();
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
@@ -1615,20 +1615,20 @@ mod tests {
 
         let _ = client.receiver.next().await; // Receive InitializeResult
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.send(initialized).unwrap();
 
         let mut server = server_task.await.unwrap();
         assert!(server.is_running());
 
         // Client sends shutdown request
         let shutdown_request = Message::Request(Request::new(2, "shutdown", None));
-        client.sender().send(shutdown_request).await.unwrap();
+        client.send(shutdown_request).unwrap();
 
         // Server receives and handles shutdown
         let msg = server.receiver.next().await.unwrap().unwrap();
         if let Message::Request(req) = msg {
             assert_eq!(req.method, "shutdown");
-            server.handle_shutdown(req.id).await.unwrap();
+            server.handle_shutdown(req.id).unwrap();
         } else {
             panic!("Expected shutdown request");
         }
@@ -1659,7 +1659,7 @@ mod tests {
 
         // Complete initialization
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.send(init_request).unwrap();
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
@@ -1673,7 +1673,7 @@ mod tests {
 
         let _ = client.receiver.next().await;
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.send(initialized).unwrap();
 
         let mut server = server_task.await.unwrap();
         assert!(server.is_running());
@@ -1692,7 +1692,7 @@ mod tests {
 
         // Complete initialization
         let init_request = Message::Request(Request::new(1, "initialize", None));
-        client.sender().send(init_request).await.unwrap();
+        client.send(init_request).unwrap();
 
         let (id, _params) = server.initialize_start().await.unwrap();
 
@@ -1706,7 +1706,7 @@ mod tests {
 
         let _ = client.receiver.next().await;
         let initialized = Message::Notification(Notification::new("initialized", None));
-        client.sender().send(initialized).await.unwrap();
+        client.send(initialized).unwrap();
 
         let mut server = server_task.await.unwrap();
 
@@ -1719,11 +1719,11 @@ mod tests {
 
         // Send shutdown
         let shutdown_request = Message::Request(Request::new(2, "shutdown", None));
-        client.sender().send(shutdown_request).await.unwrap();
+        client.send(shutdown_request).unwrap();
 
         let msg = server.receiver.next().await.unwrap().unwrap();
         if let Message::Request(req) = msg {
-            server.handle_shutdown(req.id).await.unwrap();
+            server.handle_shutdown(req.id).unwrap();
         }
 
         // The wait task should complete now
@@ -1741,8 +1741,8 @@ mod tests {
 
     use crate::IncomingMessage;
 
-    #[test]
-    fn route_request_returns_incoming_request() {
+    #[tokio::test]
+    async fn route_request_returns_incoming_request() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
@@ -1763,8 +1763,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn route_notification_returns_incoming_notification() {
+    #[tokio::test]
+    async fn route_notification_returns_incoming_notification() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
@@ -1809,8 +1809,8 @@ mod tests {
         assert_eq!(received.result.unwrap()["result"], "success");
     }
 
-    #[test]
-    fn route_response_for_unknown_id_returns_response_unknown() {
+    #[tokio::test]
+    async fn route_response_for_unknown_id_returns_response_unknown() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
@@ -1827,8 +1827,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn route_response_with_null_id_returns_response_unknown() {
+    #[tokio::test]
+    async fn route_response_with_null_id_returns_response_unknown() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
@@ -1905,8 +1905,8 @@ mod tests {
         assert_eq!(resp3.result.unwrap(), json!("third"));
     }
 
-    #[test]
-    fn route_error_response_to_pending_request() {
+    #[tokio::test]
+    async fn route_error_response_to_pending_request() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
@@ -1928,8 +1928,8 @@ mod tests {
     // Cancellation Tests
     // =========================================================================
 
-    #[test]
-    fn handle_cancel_request_cancels_pending() {
+    #[tokio::test]
+    async fn handle_cancel_request_cancels_pending() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
@@ -1952,8 +1952,8 @@ mod tests {
         assert!(token.is_cancelled());
     }
 
-    #[test]
-    fn handle_cancel_request_unknown_id_returns_false() {
+    #[tokio::test]
+    async fn handle_cancel_request_unknown_id_returns_false() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, String, ()> = Connection::new(stream);
 
@@ -1963,8 +1963,8 @@ mod tests {
         assert_eq!(result, Some(false));
     }
 
-    #[test]
-    fn handle_cancel_request_wrong_method_returns_none() {
+    #[tokio::test]
+    async fn handle_cancel_request_wrong_method_returns_none() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, String, ()> = Connection::new(stream);
 
@@ -1977,8 +1977,8 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    #[test]
-    fn handle_cancel_request_malformed_params_returns_none() {
+    #[tokio::test]
+    async fn handle_cancel_request_malformed_params_returns_none() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, String, ()> = Connection::new(stream);
 
@@ -2019,8 +2019,8 @@ mod tests {
         assert_eq!(result, "cancelled");
     }
 
-    #[test]
-    fn route_request_auto_registers_and_cancellation_works() {
+    #[tokio::test]
+    async fn route_request_auto_registers_and_cancellation_works() {
         let (stream, _) = tokio::io::duplex(4096);
         let mut conn: Connection<_, (), Response> = Connection::new(stream);
 
@@ -2057,7 +2057,7 @@ mod tests {
         let rx = client.request_queue.outgoing.register(42.into());
 
         // Cancel it - should send notification and remove from queue
-        let was_pending = client.cancel(42).await.unwrap();
+        let was_pending = client.cancel(42).unwrap();
         assert!(was_pending);
         assert!(!client.request_queue.outgoing.is_pending(&42.into()));
 
@@ -2081,7 +2081,7 @@ mod tests {
         let mut client: Connection<_, (), Response> = Connection::new(client_stream);
 
         // Cancel a request that was never registered
-        let was_pending = client.cancel(999).await.unwrap();
+        let was_pending = client.cancel(999).unwrap();
         assert!(!was_pending);
     }
 
@@ -2095,7 +2095,7 @@ mod tests {
         let rx = client.request_queue.outgoing.register("req-abc".into());
 
         // Cancel it
-        let was_pending = client.cancel("req-abc").await.unwrap();
+        let was_pending = client.cancel("req-abc").unwrap();
         assert!(was_pending);
 
         // Server should receive the notification with string ID
@@ -2138,7 +2138,7 @@ mod tests {
         if let Message::Request(req) = msg {
             assert_eq!(req.method, "client/registerCapability");
             let response = Message::Response(Response::ok(req.id, json!(null)));
-            client.sender().send(response).await.unwrap();
+            client.send(response).unwrap();
         }
 
         // Server should get the response
@@ -2183,7 +2183,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(ProtocolError::Disconnected) | Err(ProtocolError::Io(_))
+                Err(ProtocolError::Disconnected | ProtocolError::Io(_))
             ),
             "Expected Disconnected or Io error, got: {result:?}"
         );
@@ -2209,26 +2209,20 @@ mod tests {
 
         // Client sends a notification first (should be discarded by send_request)
         client
-            .sender()
             .send(Message::Notification(Notification::new(
                 "textDocument/didOpen",
                 None,
             )))
-            .await
             .unwrap();
 
         // Client sends a response with wrong ID (should be discarded)
         client
-            .sender()
             .send(Message::Response(Response::ok(999, json!("wrong"))))
-            .await
             .unwrap();
 
         // Client sends the correct response
         client
-            .sender()
             .send(Message::Response(Response::ok(42, json!("correct"))))
-            .await
             .unwrap();
 
         // Server should get the correct response
@@ -2256,7 +2250,7 @@ mod tests {
                 req.id,
                 crate::ResponseError::new(crate::ErrorCode::MethodNotFound, "Not supported"),
             ));
-            client.sender().send(error_resp).await.unwrap();
+            client.send(error_resp).unwrap();
         }
 
         let result = server_task.await.unwrap().unwrap();
@@ -2285,9 +2279,7 @@ mod tests {
         if let Message::Request(req) = msg {
             assert_eq!(req.id, crate::RequestId::String("req-abc".to_string()));
             client
-                .sender()
                 .send(Message::Response(Response::ok("req-abc", json!("ok"))))
-                .await
                 .unwrap();
         }
 
@@ -2356,9 +2348,7 @@ mod tests {
 
         // Client sends response back
         client
-            .sender()
             .send(Message::Response(Response::ok(req_id.clone(), json!(null))))
-            .await
             .unwrap();
 
         // Server reads the response and routes it through response_map
@@ -2413,24 +2403,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_message_routes_through_outbound_tx_after_client_sender() {
+    async fn send_works_before_and_after_client_sender() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server: Connection<_, (), Response> = Connection::new(server_stream);
+        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
+
+        // send works before client_sender
+        server
+            .send(Message::Notification(Notification::new("test/before", None)))
+            .unwrap();
+
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        if let Message::Notification(notif) = msg {
+            assert_eq!(notif.method, "test/before");
+        }
+    }
+
+    #[tokio::test]
+    async fn client_sender_can_be_called_multiple_times() {
+        let (stream, _) = tokio::io::duplex(4096);
+        let mut conn: Connection<_, (), Response> = Connection::new(stream);
+
+        let sender1 = conn.client_sender();
+        let sender2 = conn.client_sender(); // should NOT panic
+        drop(sender1);
+        drop(sender2);
+    }
+
+    #[tokio::test]
+    async fn send_works_after_client_sender() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let mut server: Connection<_, (), Response> = Connection::new(server_stream);
         let mut client: Connection<_, (), ()> = Connection::new(client_stream);
 
-        // Before client_sender: sender field is Some
-        assert!(server.sender.is_some());
-
         let _sender = server.client_sender();
 
-        // After client_sender: sender is None, outbound_tx is Some
-        assert!(server.sender.is_none());
-        assert!(server.outbound_tx.is_some());
-
-        // send_message should still work (routes through outbound_tx)
+        // send() should still work after client_sender()
         server
-            .send_message(Message::Notification(Notification::new("test/ping", None)))
-            .await
+            .send(Message::Notification(Notification::new("test/ping", None)))
             .unwrap();
 
         let msg = client.receiver.next().await.unwrap().unwrap();
@@ -2438,59 +2448,5 @@ mod tests {
         if let Message::Notification(notif) = msg {
             assert_eq!(notif.method, "test/ping");
         }
-    }
-
-    #[tokio::test]
-    #[should_panic(expected = "connection sender already taken")]
-    async fn client_sender_panics_on_second_call() {
-        let (stream, _) = tokio::io::duplex(4096);
-        let mut conn: Connection<_, (), Response> = Connection::new(stream);
-
-        let _sender1 = conn.client_sender();
-        let _sender2 = conn.client_sender(); // should panic
-    }
-
-    #[tokio::test]
-    #[should_panic(expected = "connection sender already taken")]
-    async fn sender_panics_after_client_sender() {
-        let (stream, _) = tokio::io::duplex(4096);
-        let mut conn: Connection<_, (), Response> = Connection::new(stream);
-
-        let _sender = conn.client_sender();
-        let _ = conn.sender(); // should panic — sender was taken
-    }
-
-    #[tokio::test]
-    async fn into_sender_works_before_client_sender() {
-        let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let conn: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), ()> = Connection::new(client_stream);
-
-        let mut sender = conn.into_sender();
-        sender
-            .send(Message::Notification(Notification::new("test/hello", None)))
-            .await
-            .unwrap();
-
-        let msg = client.receiver.next().await.unwrap().unwrap();
-        assert!(msg.is_notification());
-    }
-
-    #[tokio::test]
-    async fn deprecated_send_request_errors_after_client_sender() {
-        let (stream, _) = tokio::io::duplex(4096);
-        let mut conn: Connection<_, (), Response> = Connection::new(stream);
-
-        let _sender = conn.client_sender();
-
-        // send_request should fail because sender was taken
-        #[allow(deprecated)]
-        let result = conn
-            .send_request(1, "test", None, Duration::from_secs(1))
-            .await;
-        assert!(
-            matches!(result, Err(ProtocolError::Disconnected)),
-            "Expected Disconnected after client_sender(), got: {result:?}"
-        );
     }
 }

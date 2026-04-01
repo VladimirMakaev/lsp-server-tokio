@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::{Message, Notification, ProtocolError, Request, RequestId, Response};
 
@@ -63,10 +64,6 @@ impl ResponseMap {
     pub(crate) fn cancel(&self, id: &RequestId) -> bool {
         self.lock_pending("cancel").remove(id).is_some()
     }
-
-    pub(crate) fn cancel_all(&self) {
-        self.lock_pending("cancel_all").clear();
-    }
 }
 
 #[derive(Debug)]
@@ -107,14 +104,22 @@ pub struct ClientSender {
     tx: mpsc::UnboundedSender<Message>,
     response_map: ResponseMap,
     id_counter: Arc<AtomicI64>,
+    /// Token that is cancelled when the background drain task exits.
+    /// Used to detect disconnection in `request()` instead of hanging forever.
+    drain_alive: CancellationToken,
 }
 
 impl ClientSender {
-    pub(crate) fn new(tx: mpsc::UnboundedSender<Message>, response_map: ResponseMap) -> Self {
+    pub(crate) fn new(
+        tx: mpsc::UnboundedSender<Message>,
+        response_map: ResponseMap,
+        drain_alive: CancellationToken,
+    ) -> Self {
         Self {
             tx,
             response_map,
             id_counter: Arc::new(AtomicI64::new(1)),
+            drain_alive,
         }
     }
 
@@ -231,12 +236,19 @@ impl ClientSender {
             return Err(ProtocolError::Disconnected);
         }
 
-        match rx.await {
-            Ok(response) => {
-                cleanup.disarm();
-                Ok(response)
+        tokio::select! {
+            result = rx => {
+                match result {
+                    Ok(response) => {
+                        cleanup.disarm();
+                        Ok(response)
+                    }
+                    Err(_) => Err(ProtocolError::Disconnected),
+                }
             }
-            Err(_) => Err(ProtocolError::Disconnected),
+            () = self.drain_alive.cancelled() => {
+                Err(ProtocolError::Disconnected)
+            }
         }
     }
 }
@@ -472,6 +484,9 @@ mod tests {
         let sender = server.client_sender();
 
         drop(client);
+        // Give the runtime a chance to process the duplex close.
+        // The client's drain task needs to observe the channel close and exit.
+        tokio::task::yield_now().await;
 
         let result = tokio::time::timeout(
             Duration::from_secs(1),

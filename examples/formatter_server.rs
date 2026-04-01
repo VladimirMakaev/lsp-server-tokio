@@ -123,7 +123,7 @@ where
             IncomingMessage::Request(req, token) => {
                 // Handle shutdown specially
                 if req.method == "shutdown" {
-                    conn.handle_shutdown(req.id).await.ok();
+                    conn.handle_shutdown(req.id).ok();
                     continue;
                 }
 

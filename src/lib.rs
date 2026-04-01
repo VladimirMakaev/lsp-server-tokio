@@ -75,7 +75,7 @@ pub mod transport;
 
 pub use client_sender::{ClientSender, SendError};
 pub use codec::LspCodec;
-pub use connection::{Connection, Receiver, Sender, StdioConnection};
+pub use connection::{Connection, Receiver, StdioConnection};
 pub use error::{ErrorCode, ResponseError};
 pub use lifecycle::{ExitCode, LifecycleState, ProtocolError};
 pub use message::{Message, Notification, Request, Response};
