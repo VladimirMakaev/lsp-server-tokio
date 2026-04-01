@@ -302,7 +302,7 @@ mod tests {
         match client.receiver.next().await.unwrap().unwrap() {
             Message::Response(response) => {
                 assert_eq!(response.id, Some(7.into()));
-                assert_eq!(response.result, Some(json!("ok")));
+                assert_eq!(response.result().cloned(), Some(json!("ok")));
             }
             other => panic!("expected response, got {other:?}"),
         }
@@ -398,7 +398,7 @@ mod tests {
 
         let response = task.await.unwrap().unwrap();
         assert_eq!(response.id, Some(id));
-        assert_eq!(response.result, Some(json!({"settings": []})));
+        assert_eq!(response.result().cloned(), Some(json!({"settings": []})));
     }
 
     #[tokio::test]
@@ -447,7 +447,7 @@ mod tests {
         let results = tasks.await;
         for result in results {
             let (method, response) = result.unwrap();
-            assert_eq!(response.result, Some(json!(method)));
+            assert_eq!(response.result().cloned(), Some(json!(method)));
         }
     }
 
@@ -564,11 +564,11 @@ mod tests {
         ));
 
         assert_eq!(
-            first_task.await.unwrap().unwrap().result,
+            first_task.await.unwrap().unwrap().into_result(),
             Some(json!("first"))
         );
         assert_eq!(
-            second_task.await.unwrap().unwrap().result,
+            second_task.await.unwrap().unwrap().into_result(),
             Some(json!("second"))
         );
     }
@@ -622,7 +622,7 @@ mod tests {
         assert!(server.request_queue.outgoing.is_pending(&request_id));
 
         let response = task.await.unwrap().unwrap();
-        assert_eq!(response.result, Some(json!("response-map")));
+        assert_eq!(response.result().cloned(), Some(json!("response-map")));
     }
 
     #[tokio::test]
@@ -765,15 +765,15 @@ mod tests {
         ));
 
         assert_eq!(
-            first_task.await.unwrap().unwrap().result,
+            first_task.await.unwrap().unwrap().into_result(),
             Some(json!("first"))
         );
         assert_eq!(
-            max_task.await.unwrap().unwrap().result,
+            max_task.await.unwrap().unwrap().into_result(),
             Some(json!("second"))
         );
         assert_eq!(
-            wrapped_task.await.unwrap().unwrap().result,
+            wrapped_task.await.unwrap().unwrap().into_result(),
             Some(json!("third"))
         );
     }
@@ -824,7 +824,7 @@ mod tests {
             ))),
             IncomingMessage::ResponseRouted
         ));
-        assert_eq!(ok_task.await.unwrap().unwrap().result, Some(json!("ok")));
+        assert_eq!(ok_task.await.unwrap().unwrap().result().cloned(), Some(json!("ok")));
 
         let routed = server.route(Message::Response(Response::ok(
             timed_out.id.clone(),

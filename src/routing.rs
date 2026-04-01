@@ -128,8 +128,8 @@ pub enum IncomingMessage {
 /// let request = Request::new(42, "unknown/method", None);
 /// let response = method_not_found_response(&request);
 ///
-/// assert!(response.error.is_some());
-/// let error = response.error.unwrap();
+/// assert!(response.error().is_some());
+/// let error = response.into_error().unwrap();
 /// assert_eq!(error.code, ErrorCode::MethodNotFound as i32);
 /// assert!(error.message.contains("unknown/method"));
 /// ```
@@ -164,8 +164,8 @@ pub fn method_not_found_response(request: &Request) -> Response {
 /// let id: RequestId = 42.into();
 /// let response = cancelled_response(id);
 ///
-/// assert!(response.error.is_some());
-/// let error = response.error.unwrap();
+/// assert!(response.error().is_some());
+/// let error = response.into_error().unwrap();
 /// assert_eq!(error.code, ErrorCode::RequestCancelled as i32);
 /// ```
 pub fn cancelled_response(id: impl Into<crate::RequestId>) -> Response {
@@ -185,14 +185,14 @@ mod tests {
         let response = method_not_found_response(&request);
 
         // Verify it's an error response
-        assert!(response.error.is_some());
-        assert!(response.result.is_none());
+        assert!(response.error().is_some());
+        assert!(response.result().is_none());
 
         // Verify correct ID
         assert_eq!(response.id, Some(42.into()));
 
         // Verify error details
-        let error = response.error.unwrap();
+        let error = response.into_error().unwrap();
         assert_eq!(error.code, ErrorCode::MethodNotFound as i32);
         assert_eq!(error.code, -32601);
     }
@@ -202,7 +202,7 @@ mod tests {
         let request = Request::new(1, "custom/myMethod", None);
         let response = method_not_found_response(&request);
 
-        let error = response.error.unwrap();
+        let error = response.into_error().unwrap();
         assert!(
             error.message.contains("custom/myMethod"),
             "Error message should contain the method name"
@@ -256,11 +256,11 @@ mod tests {
     fn cancelled_response_creates_correct_error() {
         let response = cancelled_response(42);
 
-        assert!(response.error.is_some());
-        assert!(response.result.is_none());
+        assert!(response.error().is_some());
+        assert!(response.result().is_none());
         assert_eq!(response.id, Some(42.into()));
 
-        let error = response.error.unwrap();
+        let error = response.into_error().unwrap();
         assert_eq!(error.code, ErrorCode::RequestCancelled as i32);
         assert_eq!(error.code, -32800);
         assert!(error.message.contains("cancelled"));
@@ -274,6 +274,6 @@ mod tests {
             response.id,
             Some(crate::RequestId::String("req-xyz".to_string()))
         );
-        assert!(response.error.is_some());
+        assert!(response.error().is_some());
     }
 }

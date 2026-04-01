@@ -204,7 +204,7 @@ mod tests {
         assert!(received.is_response());
         if let Message::Response(resp) = &received {
             assert_eq!(resp.id, Some(1.into()));
-            assert!(resp.result.is_some());
+            assert!(resp.result().is_some());
         }
     }
 
@@ -358,8 +358,8 @@ mod tests {
         assert!(received.is_response());
         if let Message::Response(resp) = received {
             assert_eq!(resp.id, Some(1.into()));
-            assert!(resp.error.is_some());
-            let err = resp.error.unwrap();
+            assert!(resp.error().is_some());
+            let err = resp.into_error().unwrap();
             assert_eq!(err.code, -32601); // MethodNotFound
             assert_eq!(err.message, "Method not found");
         }
