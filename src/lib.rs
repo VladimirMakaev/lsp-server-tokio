@@ -38,6 +38,7 @@
 //!         IncomingMessage::CancelHandled => {}
 //!         IncomingMessage::Notification(_) => {}
 //!         IncomingMessage::ResponseRouted | IncomingMessage::ResponseUnknown(_) => {}
+//!         _ => {}
 //!     }
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(()) });

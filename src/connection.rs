@@ -86,6 +86,32 @@ use crate::lifecycle::{ExitCode, LifecycleState, ProtocolError};
 use crate::ClientSender;
 use crate::{transport, Message, RequestQueue, Transport};
 
+/// Spawns a background task that drains messages from the channel into the transport sink.
+///
+/// Returns the sender half of the channel and a cancellation token that is
+/// triggered when the drain task exits (e.g., because the transport is broken).
+fn spawn_drain_task<T>(
+    mut sender: futures::stream::SplitSink<Transport<T>, Message>,
+) -> (mpsc::UnboundedSender<Message>, CancellationToken)
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let drain_alive = CancellationToken::new();
+    let drain_guard = drain_alive.clone().drop_guard();
+
+    tokio::spawn(async move {
+        let _guard = drain_guard;
+        while let Some(message) = rx.recv().await {
+            if sender.send(message).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    (tx, drain_alive)
+}
+
 /// A [`Connection`] backed by [`StdioTransport`].
 ///
 /// This alias is useful when building stdio-based servers that want to use
@@ -139,7 +165,6 @@ pub type Receiver<T> = SplitStream<Transport<T>>;
 ///
 /// - `T`: The underlying I/O stream type (`AsyncRead + AsyncWrite`)
 /// - `I`: Metadata type for incoming requests (default: `()`)
-/// - `O`: Response type for outgoing requests (default: `()`)
 ///
 /// # Examples
 ///
@@ -257,19 +282,8 @@ where
     /// # });
     /// ```
     pub fn from_transport(transport: Transport<T>) -> Self {
-        let (mut sender, receiver) = transport.split();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let drain_alive = CancellationToken::new();
-        let drain_guard = drain_alive.clone().drop_guard();
-
-        tokio::spawn(async move {
-            let _guard = drain_guard;
-            while let Some(message) = rx.recv().await {
-                if sender.send(message).await.is_err() {
-                    return;
-                }
-            }
-        });
+        let (sender, receiver) = transport.split();
+        let (tx, drain_alive) = spawn_drain_task(sender);
 
         Self {
             outbound_tx: tx,
@@ -315,19 +329,8 @@ where
     /// ```
     pub fn with_request_queue(io: T, request_queue: RequestQueue<I>) -> Self {
         let transport = transport(io);
-        let (mut sender, receiver) = transport.split();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let drain_alive = CancellationToken::new();
-        let drain_guard = drain_alive.clone().drop_guard();
-
-        tokio::spawn(async move {
-            let _guard = drain_guard;
-            while let Some(message) = rx.recv().await {
-                if sender.send(message).await.is_err() {
-                    return;
-                }
-            }
-        });
+        let (sender, receiver) = transport.split();
+        let (tx, drain_alive) = spawn_drain_task(sender);
 
         Self {
             outbound_tx: tx,
@@ -479,6 +482,7 @@ where
     ///             // Log unexpected response
     ///             eprintln!("Unknown response: {:?}", resp.id);
     ///         }
+    ///         _ => {}
     ///     }
     /// }
     /// # });
@@ -496,20 +500,22 @@ where
                 if notif.method == crate::request_queue::CANCEL_REQUEST_METHOD {
                     if let Some(id) = crate::parse_cancel_params(&notif.params) {
                         let _ = self.request_queue.incoming.cancel(&id);
+                        crate::IncomingMessage::CancelHandled
+                    } else {
+                        // Malformed cancel — let consumer handle it
+                        crate::IncomingMessage::Notification(notif)
                     }
-                    crate::IncomingMessage::CancelHandled
                 } else {
                     crate::IncomingMessage::Notification(notif)
                 }
             }
             Message::Response(resp) => {
                 if let Some(id) = resp.id.clone() {
-                    if self
-                        .response_map
-                        .as_ref()
-                        .is_some_and(|response_map| response_map.deliver(&id, resp.clone()))
-                    {
-                        return crate::IncomingMessage::ResponseRouted;
+                    // Try ClientSender's response map first (avoids cloning unless needed)
+                    if let Some(response_map) = self.response_map.as_ref() {
+                        if response_map.contains(&id) && response_map.deliver(&id, resp.clone()) {
+                            return crate::IncomingMessage::ResponseRouted;
+                        }
                     }
 
                     // Check if there's a pending request for this response
@@ -642,7 +648,10 @@ where
     /// assert_eq!(result, Some(true));
     /// # });
     /// ```
-    #[deprecated(note = "route() now handles $/cancelRequest automatically")]
+    #[deprecated(
+        since = "0.3.0",
+        note = "use route() which handles $/cancelRequest automatically"
+    )]
     pub fn handle_cancel_request(&mut self, notification: &crate::Notification) -> Option<bool> {
         use crate::request_queue::{parse_cancel_params, CANCEL_REQUEST_METHOD};
 
@@ -851,7 +860,7 @@ where
             return Err(ProtocolError::Io(e));
         }
 
-        tokio::time::timeout(Duration::from_mins(1), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 match self.receiver.next().await {
                     Some(Ok(Message::Notification(notif))) => {

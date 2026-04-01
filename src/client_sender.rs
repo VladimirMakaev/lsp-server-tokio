@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
@@ -22,28 +24,16 @@ impl ResponseMap {
         Self::default()
     }
 
-    fn lock_pending(
-        &self,
-        operation: &str,
-    ) -> std::sync::MutexGuard<'_, HashMap<RequestId, oneshot::Sender<Response>>> {
-        match self.pending.lock() {
-            Ok(pending) => pending,
-            Err(poisoned) => panic!(
-                "response map lock poisoned during {operation}; expected healthy routing state, received poisoned mutex: {poisoned}"
-            ),
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn register(&self, id: RequestId) -> oneshot::Receiver<Response> {
         let (tx, rx) = oneshot::channel();
-        self.lock_pending("register").insert(id, tx);
+        self.pending.lock().insert(id, tx);
         rx
     }
 
     pub(crate) fn try_register(&self, id: RequestId) -> Option<oneshot::Receiver<Response>> {
         let (tx, rx) = oneshot::channel();
-        let mut pending = self.lock_pending("register");
+        let mut pending = self.pending.lock();
         if pending.contains_key(&id) {
             return None;
         }
@@ -52,8 +42,12 @@ impl ResponseMap {
         Some(rx)
     }
 
+    pub(crate) fn contains(&self, id: &RequestId) -> bool {
+        self.pending.lock().contains_key(id)
+    }
+
     pub(crate) fn deliver(&self, id: &RequestId, response: Response) -> bool {
-        if let Some(tx) = self.lock_pending("deliver").remove(id) {
+        if let Some(tx) = self.pending.lock().remove(id) {
             let _ = tx.send(response);
             true
         } else {
@@ -62,7 +56,7 @@ impl ResponseMap {
     }
 
     pub(crate) fn cancel(&self, id: &RequestId) -> bool {
-        self.lock_pending("cancel").remove(id).is_some()
+        self.pending.lock().remove(id).is_some()
     }
 }
 
@@ -157,7 +151,7 @@ impl ClientSender {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<Response, ProtocolError> {
-        let (id, rx) = self.reserve_request_slot();
+        let (id, rx) = self.reserve_request_slot().map_err(ProtocolError::Io)?;
         self.send_registered_request(id, method, params, rx).await
     }
 
@@ -178,6 +172,10 @@ impl ClientSender {
             .map_err(|_| ProtocolError::RequestTimeout)?
     }
 
+    /// Generates the next unique request ID.
+    ///
+    /// IDs start at 1 (skipping 0 to avoid ambiguity with some clients that
+    /// treat 0 as "no ID") and wrap back to 1 after reaching `i32::MAX`.
     fn next_id(&self) -> RequestId {
         let id = match self
             .id_counter
@@ -202,13 +200,17 @@ impl ClientSender {
         }
     }
 
-    fn reserve_request_slot(&self) -> (RequestId, oneshot::Receiver<Response>) {
-        loop {
+    fn reserve_request_slot(&self) -> std::io::Result<(RequestId, oneshot::Receiver<Response>)> {
+        const MAX_RETRIES: usize = 1000;
+        for _ in 0..MAX_RETRIES {
             let id = self.next_id();
             if let Some(rx) = self.response_map.try_register(id.clone()) {
-                return (id, rx);
+                return Ok((id, rx));
             }
         }
+        Err(std::io::Error::other(
+            "failed to reserve a request slot after 1000 attempts",
+        ))
     }
 
     #[cfg(test)]

@@ -155,6 +155,7 @@ where
             IncomingMessage::ResponseUnknown(resp) => {
                 eprintln!("Received unexpected response: {:?}", resp.id);
             }
+            _ => {}
         }
     }
 }

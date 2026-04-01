@@ -73,10 +73,12 @@ use crate::message::{Notification, Request, Response};
 ///             println!("Unknown response for id: {:?}", resp.id);
 ///             // Log or handle the unexpected response
 ///         }
+///         _ => {}
 ///     }
 /// }
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum IncomingMessage {
     /// A request that needs a response.
     ///

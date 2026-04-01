@@ -241,8 +241,10 @@ impl<'de> Deserialize<'de> for Response {
             None
         };
 
-        // Determine the body — error takes precedence if both are present
-        // (per JSON-RPC 2.0, having both is invalid, but we handle it gracefully)
+        // Determine the body — error takes precedence if both are present.
+        // Per JSON-RPC 2.0, having both result and error is invalid, but some
+        // implementations produce it. We handle it gracefully by preferring error,
+        // matching the spec's intent that error indicates failure.
         let body = if has_error {
             let error_val = obj.get("error").cloned().unwrap_or(Value::Null);
             if error_val.is_null() && has_result {
@@ -872,5 +874,51 @@ mod tests {
         let err = parsed.into_error().unwrap();
         assert!(err.data.is_some());
         assert_eq!(err.data.unwrap()["missing"][0], "uri");
+    }
+
+    // ============== ResponseBody Deserialization Edge Cases ==============
+
+    #[test]
+    fn response_both_result_and_error_prefers_error() {
+        // JSON-RPC 2.0 forbids both, but some implementations produce it.
+        // We prefer error (the failure signal).
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"result":"ok","error":{"code":-32600,"message":"bad"}}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert!(resp.error().is_some());
+        assert_eq!(resp.error().unwrap().code, -32600);
+    }
+
+    #[test]
+    fn response_error_null_with_result_treats_as_success() {
+        // "error": null but "result" present → success
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":"ok","error":null}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert!(resp.result().is_some());
+        assert_eq!(resp.result().unwrap(), "ok");
+    }
+
+    #[test]
+    fn response_neither_result_nor_error_rejected() {
+        let json = r#"{"jsonrpc":"2.0","id":1}"#;
+        let err = serde_json::from_str::<Response>(json).unwrap_err();
+        assert!(err.to_string().contains("result"));
+    }
+
+    #[test]
+    fn response_error_null_without_result_rejected() {
+        // "error": null and no "result" → invalid
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":null}"#;
+        let err = serde_json::from_str::<Response>(json).unwrap_err();
+        assert!(err.to_string().contains("null"));
+    }
+
+    #[test]
+    fn response_result_null_is_valid_success() {
+        // "result": null is a valid success response (e.g., shutdown response)
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":null}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert!(resp.result().is_some());
+        assert!(resp.result().unwrap().is_null());
     }
 }
