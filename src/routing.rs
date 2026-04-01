@@ -291,7 +291,8 @@ mod tests {
 
     #[test]
     fn incoming_message_accessors_match_variants() {
-        let request = IncomingMessage::Request(Request::new(1, "test", None), CancellationToken::new());
+        let request =
+            IncomingMessage::Request(Request::new(1, "test", None), CancellationToken::new());
         assert!(request.is_request());
         assert!(!request.is_notification());
         assert!(!request.is_response_routed());

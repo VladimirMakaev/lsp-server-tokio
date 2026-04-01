@@ -254,8 +254,8 @@ impl<'de> Deserialize<'de> for Response {
                     "Response has error field but it is null and no result field",
                 ));
             } else {
-                let error = serde_json::from_value::<ResponseError>(error_val)
-                    .map_err(D::Error::custom)?;
+                let error =
+                    serde_json::from_value::<ResponseError>(error_val).map_err(D::Error::custom)?;
                 ResponseBody::Error(error)
             }
         } else {
@@ -264,10 +264,7 @@ impl<'de> Deserialize<'de> for Response {
             ResponseBody::Success(result)
         };
 
-        Ok(Response {
-            id,
-            body,
-        })
+        Ok(Response { id, body })
     }
 }
 
@@ -559,7 +556,9 @@ mod tests {
     fn request_deserialization_rejects_wrong_jsonrpc_version() {
         let json = r#"{"jsonrpc":"1.0","id":1,"method":"test"}"#;
         let error = serde_json::from_str::<Request>(json).unwrap_err();
-        assert!(error.to_string().contains("expected jsonrpc field to equal \"2.0\""));
+        assert!(error
+            .to_string()
+            .contains("expected jsonrpc field to equal \"2.0\""));
     }
 
     // ============== Response Tests ==============
@@ -670,7 +669,9 @@ mod tests {
     fn notification_deserialization_rejects_wrong_jsonrpc_version() {
         let json = r#"{"jsonrpc":"1.0","method":"test"}"#;
         let error = serde_json::from_str::<Notification>(json).unwrap_err();
-        assert!(error.to_string().contains("expected jsonrpc field to equal \"2.0\""));
+        assert!(error
+            .to_string()
+            .contains("expected jsonrpc field to equal \"2.0\""));
     }
 
     #[test]

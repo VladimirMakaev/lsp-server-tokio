@@ -824,7 +824,10 @@ mod tests {
             ))),
             IncomingMessage::ResponseRouted
         ));
-        assert_eq!(ok_task.await.unwrap().unwrap().result().cloned(), Some(json!("ok")));
+        assert_eq!(
+            ok_task.await.unwrap().unwrap().result().cloned(),
+            Some(json!("ok"))
+        );
 
         let routed = server.route(Message::Response(Response::ok(
             timed_out.id.clone(),

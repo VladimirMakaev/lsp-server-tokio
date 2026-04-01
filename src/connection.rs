@@ -702,10 +702,7 @@ where
     /// assert!(rx.await.is_err());
     /// # });
     /// ```
-    pub fn cancel(
-        &mut self,
-        id: impl Into<crate::RequestId>,
-    ) -> Result<bool, std::io::Error> {
+    pub fn cancel(&mut self, id: impl Into<crate::RequestId>) -> Result<bool, std::io::Error> {
         use crate::request_queue::CANCEL_REQUEST_METHOD;
 
         let id = id.into();
@@ -1382,9 +1379,10 @@ mod tests {
         let server: Connection<_, ()> = Connection::new(server_stream);
 
         // Send from one task, receive from another
-        let send_task = tokio::spawn(async move {
-            client.send(Message::Request(Request::new(1, "test", None)))
-        });
+        let send_task =
+            tokio::spawn(
+                async move { client.send(Message::Request(Request::new(1, "test", None))) },
+            );
 
         let mut server_receiver = server.receiver;
         let recv_task = tokio::spawn(async move { server_receiver.next().await });
@@ -1432,16 +1430,19 @@ mod tests {
         assert!(conn.request_queue.outgoing.is_pending(&1.into()));
 
         // Complete it with a response
-        let completed = conn
-            .request_queue
-            .outgoing
-            .complete(&1.into(), Response::ok(1, serde_json::json!("response data")));
+        let completed = conn.request_queue.outgoing.complete(
+            &1.into(),
+            Response::ok(1, serde_json::json!("response data")),
+        );
         assert!(completed);
 
         // Receiver gets the response
         let response = rx.await.unwrap();
         assert_eq!(response.id, Some(1.into()));
-        assert_eq!(response.result().cloned(), Some(serde_json::json!("response data")));
+        assert_eq!(
+            response.result().cloned(),
+            Some(serde_json::json!("response data"))
+        );
     }
 
     // Note: Connection::stdio() cannot be tested in unit tests as it requires
@@ -2473,7 +2474,10 @@ mod tests {
 
         // send works before client_sender
         server
-            .send(Message::Notification(Notification::new("test/before", None)))
+            .send(Message::Notification(Notification::new(
+                "test/before",
+                None,
+            )))
             .unwrap();
 
         let msg = client.receiver.next().await.unwrap().unwrap();
