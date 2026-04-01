@@ -273,8 +273,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_notify_sends_notification() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         sender
@@ -293,8 +293,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_respond_sends_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         sender.respond(Response::ok(7, json!("ok"))).unwrap();
@@ -311,8 +311,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_request_auto_id() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let first_sender = sender.clone();
@@ -371,8 +371,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_request_gets_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -404,8 +404,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_concurrent_requests() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let methods = ["first", "second", "third"];
@@ -454,8 +454,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn client_sender_request_timeout() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let _client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let _client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -479,8 +479,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_request_disconnected() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         drop(client);
@@ -500,8 +500,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_notify_after_close() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         drop(client);
@@ -522,8 +522,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_multiple_clones_share_state() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
         let sender_clone = sender.clone();
 
@@ -576,8 +576,8 @@ mod tests {
     #[tokio::test]
     async fn route_delivers_to_response_map() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -601,8 +601,8 @@ mod tests {
     #[tokio::test]
     async fn route_response_map_takes_priority() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -628,8 +628,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_request_timeout_does_not_swallow_late_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task = tokio::spawn(async move {
@@ -665,8 +665,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_aborted_request_does_not_swallow_late_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task =
@@ -695,8 +695,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_wraparound_does_not_reuse_pending_id() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let first_sender = sender.clone();
@@ -781,8 +781,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_timeout_preserves_other_pending_requests() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let timeout_sender = sender.clone();

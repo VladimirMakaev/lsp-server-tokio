@@ -14,7 +14,7 @@
 //! use tokio_util::sync::CancellationToken;
 //!
 //! // Create a queue with custom metadata types
-//! let mut queue: RequestQueue<String, String> = RequestQueue::new();
+//! let mut queue: RequestQueue<String> = RequestQueue::new();
 //!
 //! // Track an incoming request (from client) with a cancellation token
 //! let request_id: RequestId = 1.into();
@@ -30,22 +30,24 @@
 //! # Server-Initiated Requests
 //!
 //! ```
-//! use lsp_server_tokio::{RequestQueue, RequestId};
+//! use lsp_server_tokio::{RequestQueue, RequestId, Response};
+//! use serde_json::json;
 //!
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-//! let mut queue: RequestQueue<(), String> = RequestQueue::new();
+//! let mut queue: RequestQueue<()> = RequestQueue::new();
 //!
 //! // Register an outgoing request (to client) and get a receiver
 //! let request_id: RequestId = 42.into();
 //! let rx = queue.outgoing.register(request_id.clone());
 //!
 //! // When response arrives, complete the request
-//! let sent = queue.outgoing.complete(&request_id, "response data".to_string());
+//! let response = Response::ok(42, json!({"result": "ok"}));
+//! let sent = queue.outgoing.complete(&request_id, response);
 //! assert!(sent);
 //!
 //! // The receiver gets the response
-//! let response = rx.await.unwrap();
-//! assert_eq!(response, "response data");
+//! let received = rx.await.unwrap();
+//! assert_eq!(received.id, Some(42.into()));
 //! # });
 //! ```
 
@@ -54,6 +56,7 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::request_id::RequestId;
+use crate::Response;
 
 /// The method name for cancel request notifications per LSP specification.
 pub const CANCEL_REQUEST_METHOD: &str = "$/cancelRequest";
@@ -220,36 +223,37 @@ impl<I> Default for IncomingRequests<I> {
 /// and receives a oneshot receiver. When the client's response arrives, the
 /// server completes the request, sending the response to the waiting receiver.
 ///
-/// The generic parameter `O` represents the response type that will be delivered
-/// when the request completes.
+/// Responses are always [`Response`](crate::Response) — the standard JSON-RPC response type.
 ///
 /// # Example
 ///
 /// ```
-/// use lsp_server_tokio::{OutgoingRequests, RequestId};
+/// use lsp_server_tokio::{OutgoingRequests, RequestId, Response};
+/// use serde_json::json;
 ///
 /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-/// let mut outgoing: OutgoingRequests<String> = OutgoingRequests::new();
+/// let mut outgoing = OutgoingRequests::new();
 ///
 /// // Register an outgoing request
 /// let rx = outgoing.register(1.into());
 /// assert!(outgoing.is_pending(&1.into()));
 ///
 /// // Simulate receiving a response
-/// let completed = outgoing.complete(&1.into(), "result".to_string());
+/// let response = Response::ok(1, json!({"result": "success"}));
+/// let completed = outgoing.complete(&1.into(), response);
 /// assert!(completed);
 ///
 /// // Receiver gets the response
 /// let result = rx.await.unwrap();
-/// assert_eq!(result, "result");
+/// assert_eq!(result.id, Some(1.into()));
 /// # });
 /// ```
 #[derive(Debug)]
-pub struct OutgoingRequests<O> {
-    pending: HashMap<RequestId, oneshot::Sender<O>>,
+pub struct OutgoingRequests {
+    pending: HashMap<RequestId, oneshot::Sender<Response>>,
 }
 
-impl<O> OutgoingRequests<O> {
+impl OutgoingRequests {
     /// Creates a new empty outgoing request tracker.
     #[must_use]
     pub fn new() -> Self {
@@ -263,7 +267,7 @@ impl<O> OutgoingRequests<O> {
     /// The returned receiver will receive the response value when [`complete`](Self::complete)
     /// is called with a matching ID. If the request is cancelled via [`cancel`](Self::cancel),
     /// the receiver will return a `RecvError`.
-    pub fn register(&mut self, id: RequestId) -> oneshot::Receiver<O> {
+    pub fn register(&mut self, id: RequestId) -> oneshot::Receiver<Response> {
         let (tx, rx) = oneshot::channel();
         self.pending.insert(id, tx);
         rx
@@ -276,7 +280,7 @@ impl<O> OutgoingRequests<O> {
     ///
     /// Note: This returns `true` even if the receiver was dropped (the response is
     /// still considered "completed" from the queue's perspective).
-    pub fn complete(&mut self, id: &RequestId, response: O) -> bool {
+    pub fn complete(&mut self, id: &RequestId, response: Response) -> bool {
         if let Some(tx) = self.pending.remove(id) {
             // Ignore send error - receiver may have been dropped
             let _ = tx.send(response);
@@ -308,7 +312,7 @@ impl<O> OutgoingRequests<O> {
     }
 }
 
-impl<O> Default for OutgoingRequests<O> {
+impl Default for OutgoingRequests {
     fn default() -> Self {
         Self::new()
     }
@@ -325,7 +329,6 @@ impl<O> Default for OutgoingRequests<O> {
 /// # Type Parameters
 ///
 /// - `I`: Metadata type for incoming requests (e.g., handler context)
-/// - `O`: Response type for outgoing requests
 ///
 /// # Example
 ///
@@ -335,7 +338,7 @@ impl<O> Default for OutgoingRequests<O> {
 ///
 /// // Create a queue for a server that tracks method names for incoming
 /// // requests and expects JSON responses for outgoing requests
-/// let mut queue: RequestQueue<String, serde_json::Value> = RequestQueue::new();
+/// let mut queue: RequestQueue<String> = RequestQueue::new();
 ///
 /// // Track incoming request with cancellation token
 /// let token = CancellationToken::new();
@@ -346,14 +349,14 @@ impl<O> Default for OutgoingRequests<O> {
 /// assert_eq!(queue.outgoing.pending_count(), 0);
 /// ```
 #[derive(Debug)]
-pub struct RequestQueue<I, O> {
+pub struct RequestQueue<I> {
     /// Tracker for requests received from clients.
     pub incoming: IncomingRequests<I>,
     /// Tracker for requests sent to clients.
-    pub outgoing: OutgoingRequests<O>,
+    pub outgoing: OutgoingRequests,
 }
 
-impl<I, O> RequestQueue<I, O> {
+impl<I> RequestQueue<I> {
     /// Creates a new empty request queue.
     #[must_use]
     pub fn new() -> Self {
@@ -364,7 +367,7 @@ impl<I, O> RequestQueue<I, O> {
     }
 }
 
-impl<I, O> Default for RequestQueue<I, O> {
+impl<I> Default for RequestQueue<I> {
     fn default() -> Self {
         Self::new()
     }
@@ -514,24 +517,25 @@ mod tests {
 
     #[tokio::test]
     async fn outgoing_register_and_complete() {
-        let mut outgoing: OutgoingRequests<String> = OutgoingRequests::new();
+        let mut outgoing = OutgoingRequests::new();
         let rx = outgoing.register(1.into());
 
-        assert!(outgoing.complete(&1.into(), "response".to_string()));
-        assert_eq!(rx.await.unwrap(), "response");
+        let response = Response::ok(1, serde_json::json!("response"));
+        assert!(outgoing.complete(&1.into(), response.clone()));
+        assert_eq!(rx.await.unwrap().id, response.id);
     }
 
     #[test]
     fn outgoing_complete_unknown_returns_false() {
-        let mut outgoing: OutgoingRequests<String> = OutgoingRequests::new();
+        let mut outgoing = OutgoingRequests::new();
 
-        let result = outgoing.complete(&999.into(), "response".to_string());
+        let result = outgoing.complete(&999.into(), Response::ok(999, serde_json::json!(null)));
         assert!(!result);
     }
 
     #[tokio::test]
     async fn outgoing_cancel_drops_sender() {
-        let mut outgoing: OutgoingRequests<String> = OutgoingRequests::new();
+        let mut outgoing = OutgoingRequests::new();
         let rx = outgoing.register(1.into());
 
         assert!(outgoing.cancel(&1.into()));
@@ -543,27 +547,27 @@ mod tests {
 
     #[test]
     fn outgoing_cancel_unknown_returns_false() {
-        let mut outgoing: OutgoingRequests<String> = OutgoingRequests::new();
+        let mut outgoing = OutgoingRequests::new();
 
         assert!(!outgoing.cancel(&999.into()));
     }
 
     #[test]
     fn outgoing_is_pending() {
-        let mut outgoing: OutgoingRequests<()> = OutgoingRequests::new();
+        let mut outgoing = OutgoingRequests::new();
 
         assert!(!outgoing.is_pending(&1.into()));
 
         let _rx = outgoing.register(1.into());
         assert!(outgoing.is_pending(&1.into()));
 
-        outgoing.complete(&1.into(), ());
+        outgoing.complete(&1.into(), Response::ok(1, serde_json::json!(null)));
         assert!(!outgoing.is_pending(&1.into()));
     }
 
     #[test]
     fn outgoing_pending_count() {
-        let mut outgoing: OutgoingRequests<i32> = OutgoingRequests::new();
+        let mut outgoing = OutgoingRequests::new();
 
         assert_eq!(outgoing.pending_count(), 0);
 
@@ -573,7 +577,7 @@ mod tests {
         let _rx2 = outgoing.register(2.into());
         assert_eq!(outgoing.pending_count(), 2);
 
-        outgoing.complete(&1.into(), 100);
+        outgoing.complete(&1.into(), Response::ok(1, serde_json::json!(null)));
         assert_eq!(outgoing.pending_count(), 1);
 
         outgoing.cancel(&2.into());
@@ -582,7 +586,7 @@ mod tests {
 
     #[test]
     fn outgoing_default() {
-        let outgoing: OutgoingRequests<()> = OutgoingRequests::default();
+        let outgoing = OutgoingRequests::default();
         assert_eq!(outgoing.pending_count(), 0);
     }
 
@@ -590,7 +594,7 @@ mod tests {
 
     #[test]
     fn queue_new_creates_empty() {
-        let queue: RequestQueue<(), ()> = RequestQueue::new();
+        let queue: RequestQueue<()> = RequestQueue::new();
 
         assert_eq!(queue.incoming.pending_count(), 0);
         assert_eq!(queue.outgoing.pending_count(), 0);
@@ -598,7 +602,7 @@ mod tests {
 
     #[test]
     fn queue_incoming_outgoing_independent() {
-        let mut queue: RequestQueue<String, String> = RequestQueue::new();
+        let mut queue: RequestQueue<String> = RequestQueue::new();
 
         // Register on incoming
         let token = CancellationToken::new();
@@ -621,14 +625,14 @@ mod tests {
 
     #[test]
     fn queue_default() {
-        let queue: RequestQueue<(), ()> = RequestQueue::default();
+        let queue: RequestQueue<()> = RequestQueue::default();
         assert_eq!(queue.incoming.pending_count(), 0);
         assert_eq!(queue.outgoing.pending_count(), 0);
     }
 
     #[test]
     fn queue_with_string_request_id() {
-        let mut queue: RequestQueue<i32, i32> = RequestQueue::new();
+        let mut queue: RequestQueue<i32> = RequestQueue::new();
 
         let str_id: RequestId = "abc-123".into();
         let token = CancellationToken::new();

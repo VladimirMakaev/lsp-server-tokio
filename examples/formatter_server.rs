@@ -60,7 +60,7 @@ impl ServerState {
 #[tokio::main]
 async fn main() {
     // Create a connection over stdio for LSP communication
-    let mut conn: Connection<_, String, Response> =
+    let mut conn: Connection<_, String> =
         Connection::new(lsp_server_tokio::connection::StdioTransport::new());
 
     // Perform LSP initialization handshake
@@ -95,7 +95,7 @@ async fn main() {
     }
 }
 
-async fn run_server<T>(mut conn: Connection<T, String, Response>, sender: ClientSender)
+async fn run_server<T>(mut conn: Connection<T, String>, sender: ClientSender)
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
