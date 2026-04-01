@@ -63,6 +63,9 @@ use crate::message::{Notification, Request, Response};
 ///         IncomingMessage::Notification(notif) => {
 ///             println!("Handle notification: {}", notif.method);
 ///         }
+///         IncomingMessage::CancelHandled => {
+///             // `$/cancelRequest` was applied automatically
+///         }
 ///         IncomingMessage::ResponseRouted => {
 ///             // Response was delivered to awaiting task, nothing to do
 ///         }
@@ -89,6 +92,12 @@ pub enum IncomingMessage {
     ///
     /// No response is expected or allowed.
     Notification(Notification),
+
+    /// A `$/cancelRequest` notification that was automatically processed.
+    ///
+    /// The cancellation token for the referenced request (if pending) has already
+    /// been triggered. No further action is needed.
+    CancelHandled,
 
     /// A response that was successfully delivered to a pending outgoing request.
     ///
