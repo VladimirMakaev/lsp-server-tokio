@@ -95,7 +95,7 @@ use crate::{transport, Message, RequestQueue, Transport};
 /// # Examples
 ///
 /// ```no_run
-/// use lsp_server_tokio::{connection::StdioTransport, Connection, StdioConnection};
+/// use lsp_server_tokio::{StdioTransport, Connection, StdioConnection};
 ///
 /// let conn: StdioConnection<String> = Connection::new(StdioTransport::new());
 /// ```
@@ -1231,7 +1231,7 @@ impl Connection<StdioTransport, ()> {
     /// [`Connection::new()`] with a [`StdioTransport`] directly:
     ///
     /// ```no_run
-    /// use lsp_server_tokio::{Connection, connection::StdioTransport};
+    /// use lsp_server_tokio::{Connection, StdioTransport};
     ///
     /// let conn: Connection<StdioTransport, String> = Connection::new(StdioTransport::new());
     /// ```

@@ -98,20 +98,20 @@
 //! - [`IncomingMessage::ResponseRouted`] - A response delivered to an awaiting receiver
 //! - [`IncomingMessage::ResponseUnknown`] - A response for an unknown request ID
 
-pub mod client_sender;
-pub mod codec;
-pub mod connection;
-pub mod error;
-pub mod lifecycle;
-pub mod message;
-pub mod request_id;
-pub mod request_queue;
-pub mod routing;
-pub mod transport;
+mod client_sender;
+mod codec;
+mod connection;
+mod error;
+mod lifecycle;
+mod message;
+mod request_id;
+mod request_queue;
+mod routing;
+mod transport;
 
 pub use client_sender::{ClientSender, SendError};
 pub use codec::LspCodec;
-pub use connection::{Connection, Receiver, StdioConnection};
+pub use connection::{Connection, Receiver, StdioConnection, StdioTransport};
 pub use error::{ErrorCode, ResponseError};
 pub use lifecycle::{ExitCode, LifecycleState, ProtocolError};
 pub use message::{Message, Notification, Request, Response, ResponseBody};

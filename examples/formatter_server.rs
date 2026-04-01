@@ -61,7 +61,7 @@ impl ServerState {
 async fn main() {
     // Create a connection over stdio for LSP communication
     let mut conn: Connection<_, String> =
-        Connection::new(lsp_server_tokio::connection::StdioTransport::new());
+        Connection::new(lsp_server_tokio::StdioTransport::new());
 
     // Perform LSP initialization handshake
     let capabilities = match serde_json::to_value(server_capabilities()) {
