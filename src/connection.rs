@@ -752,9 +752,13 @@ where
     /// let mut conn: Connection<_, ()> = Connection::new(stream);
     ///
     /// let (id, params) = conn.initialize_start().await.unwrap();
-    /// // Process params, build capabilities...
+    /// // Process params, build the full InitializeResult payload...
     /// let capabilities = serde_json::json!({"textDocumentSync": 1});
-    /// conn.initialize_finish(id, capabilities).await.unwrap();
+    /// let result = serde_json::json!({
+    ///     "capabilities": capabilities,
+    ///     "serverInfo": {"name": "my-server", "version": "0.1.0"}
+    /// });
+    /// conn.initialize_finish(id, result).await.unwrap();
     /// # });
     /// ```
     pub async fn initialize_start(
