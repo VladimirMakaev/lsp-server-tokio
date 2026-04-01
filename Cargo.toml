@@ -2,6 +2,7 @@
 name = "lsp-server-tokio"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.91"
 description = "An async-first LSP server infrastructure crate using Tokio"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/VladimirMakaev/lsp-server-tokio"

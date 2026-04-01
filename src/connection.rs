@@ -860,7 +860,7 @@ where
             return Err(ProtocolError::Io(e));
         }
 
-        tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::time::timeout(Duration::from_mins(1), async {
             loop {
                 match self.receiver.next().await {
                     Some(Ok(Message::Notification(notif))) => {
