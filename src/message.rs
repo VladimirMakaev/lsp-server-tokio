@@ -179,13 +179,12 @@ impl Serialize for Response {
     where
         S: serde::Serializer,
     {
-        // Count fields: jsonrpc + body field + optional id
-        let field_count = 2 + usize::from(self.id.is_some());
-        let mut state = serializer.serialize_struct("Response", field_count)?;
+        // Always 3 fields: jsonrpc + id + body (result or error).
+        // Per JSON-RPC 2.0, "id" MUST be present in every Response — set to
+        // null when the request id could not be determined (e.g. parse errors).
+        let mut state = serializer.serialize_struct("Response", 3)?;
         state.serialize_field("jsonrpc", JSONRPC_VERSION)?;
-        if let Some(id) = &self.id {
-            state.serialize_field("id", id)?;
-        }
+        state.serialize_field("id", &self.id)?;
         match &self.body {
             ResponseBody::Success(result) => state.serialize_field("result", result)?,
             ResponseBody::Error(error) => state.serialize_field("error", error)?,
@@ -611,8 +610,11 @@ mod tests {
         let resp = Response::parse_error(error);
         let json = serde_json::to_string(&resp).unwrap();
 
-        // id should be omitted (null semantically)
-        assert!(!json.contains("\"id\""));
+        // Per JSON-RPC 2.0 spec, id MUST be null (not omitted) for parse errors
+        assert!(
+            json.contains("\"id\":null"),
+            "id must be explicitly null: {json}"
+        );
 
         let parsed: Response = serde_json::from_str(&json).unwrap();
         assert!(parsed.id.is_none());

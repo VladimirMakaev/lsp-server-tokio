@@ -57,6 +57,7 @@ use thiserror::Error;
 ///                                       Exited
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum LifecycleState {
     /// Connection established, awaiting `initialize` request.
     ///
