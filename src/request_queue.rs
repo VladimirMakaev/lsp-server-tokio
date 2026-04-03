@@ -13,18 +13,18 @@
 //! use lsp_server_tokio::{RequestQueue, RequestId};
 //! use tokio_util::sync::CancellationToken;
 //!
-//! // Create a queue with custom metadata types
-//! let mut queue: RequestQueue<String> = RequestQueue::new();
+//! // Create a queue
+//! let mut queue = RequestQueue::new();
 //!
 //! // Track an incoming request (from client) with a cancellation token
 //! let request_id: RequestId = 1.into();
 //! let token = CancellationToken::new();
-//! queue.incoming.register(request_id.clone(), "handler_context".to_string(), token);
+//! queue.incoming.register(request_id.clone(), token);
 //! assert!(queue.incoming.is_pending(&request_id));
 //!
 //! // When ready to respond, complete the request
-//! let metadata = queue.incoming.complete(&request_id);
-//! assert_eq!(metadata, Some("handler_context".to_string()));
+//! let was_pending = queue.incoming.complete(&request_id);
+//! assert!(was_pending);
 //! ```
 //!
 //! # Server-Initiated Requests
@@ -34,7 +34,7 @@
 //! use serde_json::json;
 //!
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-//! let mut queue: RequestQueue<()> = RequestQueue::new();
+//! let mut queue = RequestQueue::new();
 //!
 //! // Register an outgoing request (to client) and get a receiver
 //! let request_id: RequestId = 42.into();
@@ -109,14 +109,12 @@ pub fn parse_cancel_params(params: &Option<serde_json::Value>) -> Option<Request
 /// Tracks requests received from clients (incoming to the server).
 ///
 /// When the server receives a request, it registers the request ID along with
-/// any metadata needed to process the response. When the server is ready to
-/// send a response, it completes the request to retrieve the metadata.
+/// a cancellation token. When the server is ready to send a response, it
+/// completes the request.
 ///
-/// Each request is also associated with a [`CancellationToken`] that can be
+/// Each request is associated with a [`CancellationToken`] that can be
 /// used to signal cancellation (e.g., when receiving `$/cancelRequest`).
 ///
-/// The generic parameter `I` represents user-defined metadata associated with
-/// each incoming request (e.g., handler context, timing info, request origin).
 ///
 /// # Example
 ///
@@ -124,13 +122,13 @@ pub fn parse_cancel_params(params: &Option<serde_json::Value>) -> Option<Request
 /// use lsp_server_tokio::{IncomingRequests, RequestId};
 /// use tokio_util::sync::CancellationToken;
 ///
-/// let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+/// let mut incoming = IncomingRequests::new();
 ///
-/// // Register a request with metadata and cancellation token
+/// // Register a request with a cancellation token
 /// let token1 = CancellationToken::new();
 /// let token2 = CancellationToken::new();
-/// incoming.register(1.into(), "textDocument/hover".to_string(), token1);
-/// incoming.register(2.into(), "textDocument/completion".to_string(), token2);
+/// incoming.register(1.into(), token1);
+/// incoming.register(2.into(), token2);
 ///
 /// assert_eq!(incoming.pending_count(), 2);
 /// assert!(incoming.is_pending(&1.into()));
@@ -138,17 +136,16 @@ pub fn parse_cancel_params(params: &Option<serde_json::Value>) -> Option<Request
 /// // Cancel a request
 /// incoming.cancel(&2.into());
 ///
-/// // Complete request and get metadata back
-/// let method = incoming.complete(&1.into());
-/// assert_eq!(method, Some("textDocument/hover".to_string()));
+/// // Complete request
+/// assert!(incoming.complete(&1.into()));
 /// assert_eq!(incoming.pending_count(), 1);
 /// ```
 #[derive(Debug)]
-pub struct IncomingRequests<I> {
-    pending: HashMap<RequestId, (I, CancellationToken)>,
+pub struct IncomingRequests {
+    pending: HashMap<RequestId, CancellationToken>,
 }
 
-impl<I> IncomingRequests<I> {
+impl IncomingRequests {
     /// Creates a new empty incoming request tracker.
     #[must_use]
     pub fn new() -> Self {
@@ -157,21 +154,20 @@ impl<I> IncomingRequests<I> {
         }
     }
 
-    /// Registers an incoming request with associated metadata and cancellation token.
+    /// Registers an incoming request with a cancellation token.
     ///
-    /// The metadata can be any user-defined type that you want to associate
-    /// with this request until it's completed. The cancellation token can be
-    /// used to signal request cancellation to async handlers.
-    pub fn register(&mut self, id: RequestId, data: I, token: CancellationToken) {
-        self.pending.insert(id, (data, token));
+    /// The cancellation token can be used to signal request cancellation
+    /// to async handlers.
+    pub fn register(&mut self, id: RequestId, token: CancellationToken) {
+        self.pending.insert(id, token);
     }
 
-    /// Completes an incoming request, removing it from tracking and returning the metadata.
+    /// Completes an incoming request, removing it from tracking.
     ///
-    /// Returns `Some(metadata)` if the request was pending, `None` otherwise.
+    /// Returns `true` if the request was pending, `false` otherwise.
     /// The cancellation token is dropped when the request is completed.
-    pub fn complete(&mut self, id: &RequestId) -> Option<I> {
-        self.pending.remove(id).map(|(data, _)| data)
+    pub fn complete(&mut self, id: &RequestId) -> bool {
+        self.pending.remove(id).is_some()
     }
 
     /// Returns `true` if the request is currently pending.
@@ -187,7 +183,7 @@ impl<I> IncomingRequests<I> {
     /// token is a no-op.
     #[must_use]
     pub fn cancel(&self, id: &RequestId) -> bool {
-        if let Some((_, token)) = self.pending.get(id) {
+        if let Some(token) = self.pending.get(id) {
             token.cancel();
             true
         } else {
@@ -201,7 +197,7 @@ impl<I> IncomingRequests<I> {
     /// can be passed to async handlers for cooperative cancellation.
     #[must_use]
     pub fn get_token(&self, id: &RequestId) -> Option<CancellationToken> {
-        self.pending.get(id).map(|(_, token)| token.clone())
+        self.pending.get(id).cloned()
     }
 
     /// Returns the number of currently pending requests.
@@ -211,7 +207,7 @@ impl<I> IncomingRequests<I> {
     }
 }
 
-impl<I> Default for IncomingRequests<I> {
+impl Default for IncomingRequests {
     fn default() -> Self {
         Self::new()
     }
@@ -326,37 +322,32 @@ impl Default for OutgoingRequests {
 /// - `incoming`: Requests received from clients that need responses
 /// - `outgoing`: Requests sent to clients that are awaiting responses
 ///
-/// # Type Parameters
-///
-/// - `I`: Metadata type for incoming requests (e.g., handler context)
-///
 /// # Example
 ///
 /// ```
 /// use lsp_server_tokio::{RequestQueue, RequestId};
 /// use tokio_util::sync::CancellationToken;
 ///
-/// // Create a queue for a server that tracks method names for incoming
-/// // requests and expects JSON responses for outgoing requests
-/// let mut queue: RequestQueue<String> = RequestQueue::new();
+/// // Create a queue
+/// let mut queue = RequestQueue::new();
 ///
 /// // Track incoming request with cancellation token
 /// let token = CancellationToken::new();
-/// queue.incoming.register(1.into(), "textDocument/hover".to_string(), token);
+/// queue.incoming.register(1.into(), token);
 ///
 /// // Operations on incoming don't affect outgoing
 /// assert_eq!(queue.incoming.pending_count(), 1);
 /// assert_eq!(queue.outgoing.pending_count(), 0);
 /// ```
 #[derive(Debug)]
-pub struct RequestQueue<I> {
+pub struct RequestQueue {
     /// Tracker for requests received from clients.
-    pub incoming: IncomingRequests<I>,
+    pub incoming: IncomingRequests,
     /// Tracker for requests sent to clients.
     pub outgoing: OutgoingRequests,
 }
 
-impl<I> RequestQueue<I> {
+impl RequestQueue {
     /// Creates a new empty request queue.
     #[must_use]
     pub fn new() -> Self {
@@ -367,7 +358,7 @@ impl<I> RequestQueue<I> {
     }
 }
 
-impl<I> Default for RequestQueue<I> {
+impl Default for RequestQueue {
     fn default() -> Self {
         Self::new()
     }
@@ -382,32 +373,29 @@ mod tests {
 
     #[test]
     fn incoming_register_and_complete() {
-        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+        let mut incoming = IncomingRequests::new();
         let token = CancellationToken::new();
 
-        incoming.register(1.into(), "metadata".to_string(), token);
-        let data = incoming.complete(&1.into());
-
-        assert_eq!(data, Some("metadata".to_string()));
+        incoming.register(1.into(), token);
+        assert!(incoming.complete(&1.into()));
         assert!(!incoming.is_pending(&1.into()));
     }
 
     #[test]
-    fn incoming_complete_unknown_returns_none() {
-        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+    fn incoming_complete_unknown_returns_false() {
+        let mut incoming = IncomingRequests::new();
 
-        let data = incoming.complete(&999.into());
-        assert_eq!(data, None);
+        assert!(!incoming.complete(&999.into()));
     }
 
     #[test]
     fn incoming_is_pending() {
-        let mut incoming: IncomingRequests<()> = IncomingRequests::new();
+        let mut incoming = IncomingRequests::new();
 
         assert!(!incoming.is_pending(&1.into()));
 
         let token = CancellationToken::new();
-        incoming.register(1.into(), (), token);
+        incoming.register(1.into(), token);
         assert!(incoming.is_pending(&1.into()));
 
         incoming.complete(&1.into());
@@ -416,16 +404,16 @@ mod tests {
 
     #[test]
     fn incoming_pending_count() {
-        let mut incoming: IncomingRequests<i32> = IncomingRequests::new();
+        let mut incoming = IncomingRequests::new();
 
         assert_eq!(incoming.pending_count(), 0);
 
         let token1 = CancellationToken::new();
-        incoming.register(1.into(), 100, token1);
+        incoming.register(1.into(), token1);
         assert_eq!(incoming.pending_count(), 1);
 
         let token2 = CancellationToken::new();
-        incoming.register(2.into(), 200, token2);
+        incoming.register(2.into(), token2);
         assert_eq!(incoming.pending_count(), 2);
 
         incoming.complete(&1.into());
@@ -437,17 +425,17 @@ mod tests {
 
     #[test]
     fn incoming_default() {
-        let incoming: IncomingRequests<()> = IncomingRequests::default();
+        let incoming = IncomingRequests::default();
         assert_eq!(incoming.pending_count(), 0);
     }
 
     #[test]
     fn incoming_cancel_triggers_token() {
-        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+        let mut incoming = IncomingRequests::new();
         let token = CancellationToken::new();
         let token_clone = token.clone();
 
-        incoming.register(1.into(), "data".to_string(), token);
+        incoming.register(1.into(), token);
 
         // Cancel the request
         assert!(incoming.cancel(&1.into()));
@@ -458,16 +446,16 @@ mod tests {
 
     #[test]
     fn incoming_cancel_unknown_returns_false() {
-        let incoming: IncomingRequests<()> = IncomingRequests::new();
+        let incoming = IncomingRequests::new();
         assert!(!incoming.cancel(&999.into()));
     }
 
     #[test]
     fn incoming_cancel_idempotent() {
-        let mut incoming: IncomingRequests<()> = IncomingRequests::new();
+        let mut incoming = IncomingRequests::new();
         let token = CancellationToken::new();
 
-        incoming.register(1.into(), (), token);
+        incoming.register(1.into(), token);
 
         // Cancel twice - both should succeed
         assert!(incoming.cancel(&1.into()));
@@ -476,10 +464,10 @@ mod tests {
 
     #[test]
     fn incoming_get_token_returns_clone() {
-        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+        let mut incoming = IncomingRequests::new();
         let original_token = CancellationToken::new();
 
-        incoming.register(1.into(), "data".to_string(), original_token.clone());
+        incoming.register(1.into(), original_token.clone());
 
         // Get the token
         let retrieved = incoming.get_token(&1.into());
@@ -494,23 +482,22 @@ mod tests {
 
     #[test]
     fn incoming_get_token_unknown_returns_none() {
-        let incoming: IncomingRequests<()> = IncomingRequests::new();
+        let incoming = IncomingRequests::new();
         assert!(incoming.get_token(&999.into()).is_none());
     }
 
     #[test]
-    fn incoming_complete_after_cancel_returns_data() {
-        let mut incoming: IncomingRequests<String> = IncomingRequests::new();
+    fn incoming_complete_after_cancel() {
+        let mut incoming = IncomingRequests::new();
         let token = CancellationToken::new();
 
-        incoming.register(1.into(), "cancelled_data".to_string(), token);
+        incoming.register(1.into(), token);
 
         // Cancel first
         let _ = incoming.cancel(&1.into());
 
-        // Complete should still return the data
-        let data = incoming.complete(&1.into());
-        assert_eq!(data, Some("cancelled_data".to_string()));
+        // Complete should still succeed
+        assert!(incoming.complete(&1.into()));
     }
 
     // ============== OutgoingRequests Tests ==============
@@ -594,7 +581,7 @@ mod tests {
 
     #[test]
     fn queue_new_creates_empty() {
-        let queue: RequestQueue<()> = RequestQueue::new();
+        let queue = RequestQueue::new();
 
         assert_eq!(queue.incoming.pending_count(), 0);
         assert_eq!(queue.outgoing.pending_count(), 0);
@@ -602,13 +589,11 @@ mod tests {
 
     #[test]
     fn queue_incoming_outgoing_independent() {
-        let mut queue: RequestQueue<String> = RequestQueue::new();
+        let mut queue = RequestQueue::new();
 
         // Register on incoming
         let token = CancellationToken::new();
-        queue
-            .incoming
-            .register(1.into(), "incoming".to_string(), token);
+        queue.incoming.register(1.into(), token);
         assert_eq!(queue.incoming.pending_count(), 1);
         assert_eq!(queue.outgoing.pending_count(), 0);
 
@@ -625,21 +610,21 @@ mod tests {
 
     #[test]
     fn queue_default() {
-        let queue: RequestQueue<()> = RequestQueue::default();
+        let queue = RequestQueue::default();
         assert_eq!(queue.incoming.pending_count(), 0);
         assert_eq!(queue.outgoing.pending_count(), 0);
     }
 
     #[test]
     fn queue_with_string_request_id() {
-        let mut queue: RequestQueue<i32> = RequestQueue::new();
+        let mut queue = RequestQueue::new();
 
         let str_id: RequestId = "abc-123".into();
         let token = CancellationToken::new();
-        queue.incoming.register(str_id.clone(), 42, token);
+        queue.incoming.register(str_id.clone(), token);
 
         assert!(queue.incoming.is_pending(&str_id));
-        assert_eq!(queue.incoming.complete(&str_id), Some(42));
+        assert!(queue.incoming.complete(&str_id));
     }
 
     // ============== parse_cancel_params Tests ==============
