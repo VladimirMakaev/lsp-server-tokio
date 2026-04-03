@@ -9,30 +9,66 @@
 //!
 //! ## Quick Start
 //!
-//! ```
-//! use lsp_server_tokio::{duplex_transport, Message, Request, Response};
-//! use futures::{SinkExt, StreamExt};
+//! ```no_run
+//! use futures::StreamExt;
+//! use lsp_server_tokio::{Connection, IncomingMessage, Response};
 //!
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-//! // Create in-memory transport pair for testing
+//! let mut conn = Connection::stdio();
+//! let capabilities = serde_json::json!({
+//!     "documentFormattingProvider": true
+//! });
+//!
+//! let _client_params = conn.initialize(capabilities).await?;
+//! let sender = conn.client_sender();
+//!
+//! while let Some(result) = conn.receiver.next().await {
+//!     let msg = result?;
+//!
+//!     match conn.route(msg) {
+//!         IncomingMessage::Request(req, _) if req.method == "shutdown" => {
+//!             conn.handle_shutdown(req.id)?;
+//!         }
+//!         IncomingMessage::Request(req, _) => {
+//!             sender.respond(Response::ok(req.id, serde_json::Value::Null))?;
+//!         }
+//!         IncomingMessage::Notification(notif) if notif.method == "exit" => {
+//!             break;
+//!         }
+//!         IncomingMessage::CancelHandled => {}
+//!         IncomingMessage::Notification(_) => {}
+//!         IncomingMessage::ResponseRouted | IncomingMessage::ResponseUnknown(_) => {}
+//!         _ => {}
+//!     }
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(()) });
+//! ```
+//!
+//! ## Testing
+//!
+//! Use [`duplex_transport()`] when you want connected in-memory transports for unit
+//! and integration tests without stdio:
+//!
+//! ```
+//! use futures::{SinkExt, StreamExt};
+//! use lsp_server_tokio::{duplex_transport, Message, Request, Response};
+//!
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! let (mut client, mut server) = duplex_transport(4096);
 //!
-//! // Send a request from client
-//! let request = Message::Request(Request::new(1, "textDocument/hover", None));
-//! client.send(request).await.unwrap();
+//! client
+//!     .send(Message::Request(Request::new(1, "textDocument/hover", None)))
+//!     .await
+//!     .unwrap();
 //!
-//! // Receive on server
 //! if let Some(Ok(Message::Request(req))) = server.next().await {
-//!     println!("Received: {}", req.method);
-//!
-//!     // Send response back
-//!     let response = Message::Response(Response::ok(1, serde_json::json!({"contents": "Hello"})));
-//!     server.send(response).await.unwrap();
-//! }
-//!
-//! // Receive response on client
-//! if let Some(Ok(Message::Response(resp))) = client.next().await {
-//!     println!("Got response for id: {:?}", resp.id);
+//!     server
+//!         .send(Message::Response(Response::ok(
+//!             req.id,
+//!             serde_json::json!({"contents": "Hello"}),
+//!         )))
+//!         .await
+//!         .unwrap();
 //! }
 //! # });
 //! ```
@@ -59,26 +95,27 @@
 //! The [`IncomingMessage`] enum classifies messages received from [`Connection::route()`]:
 //! - [`IncomingMessage::Request`] - A request with automatic [`CancellationToken`] for cooperative cancellation
 //! - [`IncomingMessage::Notification`] - A notification (no response expected)
+//! - [`IncomingMessage::CancelHandled`] - A `$/cancelRequest` that was applied automatically
 //! - [`IncomingMessage::ResponseRouted`] - A response delivered to an awaiting receiver
 //! - [`IncomingMessage::ResponseUnknown`] - A response for an unknown request ID
 
-pub mod client_sender;
-pub mod codec;
-pub mod connection;
-pub mod error;
-pub mod lifecycle;
-pub mod message;
-pub mod request_id;
-pub mod request_queue;
-pub mod routing;
-pub mod transport;
+mod client_sender;
+mod codec;
+mod connection;
+mod error;
+mod lifecycle;
+mod message;
+mod request_id;
+mod request_queue;
+mod routing;
+mod transport;
 
 pub use client_sender::{ClientSender, SendError};
 pub use codec::LspCodec;
-pub use connection::{Connection, Receiver, Sender, StdioConnection};
+pub use connection::{Connection, Receiver, StdioConnection, StdioTransport};
 pub use error::{ErrorCode, ResponseError};
 pub use lifecycle::{ExitCode, LifecycleState, ProtocolError};
-pub use message::{Message, Notification, Request, Response};
+pub use message::{Message, Notification, Request, Response, ResponseBody};
 pub use request_id::RequestId;
 pub use request_queue::{
     parse_cancel_params, IncomingRequests, OutgoingRequests, RequestQueue, CANCEL_REQUEST_METHOD,

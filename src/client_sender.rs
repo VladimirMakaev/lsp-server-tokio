@@ -2,11 +2,14 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::{Message, Notification, ProtocolError, Request, RequestId, Response};
 
@@ -21,28 +24,16 @@ impl ResponseMap {
         Self::default()
     }
 
-    fn lock_pending(
-        &self,
-        operation: &str,
-    ) -> std::sync::MutexGuard<'_, HashMap<RequestId, oneshot::Sender<Response>>> {
-        match self.pending.lock() {
-            Ok(pending) => pending,
-            Err(poisoned) => panic!(
-                "response map lock poisoned during {operation}; expected healthy routing state, received poisoned mutex: {poisoned}"
-            ),
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn register(&self, id: RequestId) -> oneshot::Receiver<Response> {
         let (tx, rx) = oneshot::channel();
-        self.lock_pending("register").insert(id, tx);
+        self.pending.lock().insert(id, tx);
         rx
     }
 
     pub(crate) fn try_register(&self, id: RequestId) -> Option<oneshot::Receiver<Response>> {
         let (tx, rx) = oneshot::channel();
-        let mut pending = self.lock_pending("register");
+        let mut pending = self.pending.lock();
         if pending.contains_key(&id) {
             return None;
         }
@@ -51,8 +42,12 @@ impl ResponseMap {
         Some(rx)
     }
 
+    pub(crate) fn contains(&self, id: &RequestId) -> bool {
+        self.pending.lock().contains_key(id)
+    }
+
     pub(crate) fn deliver(&self, id: &RequestId, response: Response) -> bool {
-        if let Some(tx) = self.lock_pending("deliver").remove(id) {
+        if let Some(tx) = self.pending.lock().remove(id) {
             let _ = tx.send(response);
             true
         } else {
@@ -61,11 +56,7 @@ impl ResponseMap {
     }
 
     pub(crate) fn cancel(&self, id: &RequestId) -> bool {
-        self.lock_pending("cancel").remove(id).is_some()
-    }
-
-    pub(crate) fn cancel_all(&self) {
-        self.lock_pending("cancel_all").clear();
+        self.pending.lock().remove(id).is_some()
     }
 }
 
@@ -107,14 +98,22 @@ pub struct ClientSender {
     tx: mpsc::UnboundedSender<Message>,
     response_map: ResponseMap,
     id_counter: Arc<AtomicI64>,
+    /// Token that is cancelled when the background drain task exits.
+    /// Used to detect disconnection in `request()` instead of hanging forever.
+    drain_alive: CancellationToken,
 }
 
 impl ClientSender {
-    pub(crate) fn new(tx: mpsc::UnboundedSender<Message>, response_map: ResponseMap) -> Self {
+    pub(crate) fn new(
+        tx: mpsc::UnboundedSender<Message>,
+        response_map: ResponseMap,
+        drain_alive: CancellationToken,
+    ) -> Self {
         Self {
             tx,
             response_map,
             id_counter: Arc::new(AtomicI64::new(1)),
+            drain_alive,
         }
     }
 
@@ -152,7 +151,7 @@ impl ClientSender {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<Response, ProtocolError> {
-        let (id, rx) = self.reserve_request_slot();
+        let (id, rx) = self.reserve_request_slot().map_err(ProtocolError::Io)?;
         self.send_registered_request(id, method, params, rx).await
     }
 
@@ -173,6 +172,10 @@ impl ClientSender {
             .map_err(|_| ProtocolError::RequestTimeout)?
     }
 
+    /// Generates the next unique request ID.
+    ///
+    /// IDs start at 1 (skipping 0 to avoid ambiguity with some clients that
+    /// treat 0 as "no ID") and wrap back to 1 after reaching `i32::MAX`.
     fn next_id(&self) -> RequestId {
         let id = match self
             .id_counter
@@ -197,13 +200,17 @@ impl ClientSender {
         }
     }
 
-    fn reserve_request_slot(&self) -> (RequestId, oneshot::Receiver<Response>) {
-        loop {
+    fn reserve_request_slot(&self) -> std::io::Result<(RequestId, oneshot::Receiver<Response>)> {
+        const MAX_RETRIES: usize = 1000;
+        for _ in 0..MAX_RETRIES {
             let id = self.next_id();
             if let Some(rx) = self.response_map.try_register(id.clone()) {
-                return (id, rx);
+                return Ok((id, rx));
             }
         }
+        Err(std::io::Error::other(
+            "failed to reserve a request slot after 1000 attempts",
+        ))
     }
 
     #[cfg(test)]
@@ -231,12 +238,19 @@ impl ClientSender {
             return Err(ProtocolError::Disconnected);
         }
 
-        match rx.await {
-            Ok(response) => {
-                cleanup.disarm();
-                Ok(response)
+        tokio::select! {
+            result = rx => {
+                match result {
+                    Ok(response) => {
+                        cleanup.disarm();
+                        Ok(response)
+                    }
+                    Err(_) => Err(ProtocolError::Disconnected),
+                }
             }
-            Err(_) => Err(ProtocolError::Disconnected),
+            () = self.drain_alive.cancelled() => {
+                Err(ProtocolError::Disconnected)
+            }
         }
     }
 }
@@ -261,8 +275,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_notify_sends_notification() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         sender
@@ -281,8 +295,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_respond_sends_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         sender.respond(Response::ok(7, json!("ok"))).unwrap();
@@ -290,7 +304,7 @@ mod tests {
         match client.receiver.next().await.unwrap().unwrap() {
             Message::Response(response) => {
                 assert_eq!(response.id, Some(7.into()));
-                assert_eq!(response.result, Some(json!("ok")));
+                assert_eq!(response.result().cloned(), Some(json!("ok")));
             }
             other => panic!("expected response, got {other:?}"),
         }
@@ -299,8 +313,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_request_auto_id() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let first_sender = sender.clone();
@@ -359,8 +373,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_request_gets_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -386,14 +400,14 @@ mod tests {
 
         let response = task.await.unwrap().unwrap();
         assert_eq!(response.id, Some(id));
-        assert_eq!(response.result, Some(json!({"settings": []})));
+        assert_eq!(response.result().cloned(), Some(json!({"settings": []})));
     }
 
     #[tokio::test]
     async fn client_sender_concurrent_requests() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let methods = ["first", "second", "third"];
@@ -435,15 +449,15 @@ mod tests {
         let results = tasks.await;
         for result in results {
             let (method, response) = result.unwrap();
-            assert_eq!(response.result, Some(json!(method)));
+            assert_eq!(response.result().cloned(), Some(json!(method)));
         }
     }
 
     #[tokio::test(start_paused = true)]
     async fn client_sender_request_timeout() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let _client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let _client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -467,11 +481,14 @@ mod tests {
     #[tokio::test]
     async fn client_sender_request_disconnected() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         drop(client);
+        // Give the runtime a chance to process the duplex close.
+        // The client's drain task needs to observe the channel close and exit.
+        tokio::task::yield_now().await;
 
         let result = tokio::time::timeout(
             Duration::from_secs(1),
@@ -485,8 +502,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_notify_after_close() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         drop(client);
@@ -507,8 +524,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_multiple_clones_share_state() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
         let sender_clone = sender.clone();
 
@@ -549,11 +566,11 @@ mod tests {
         ));
 
         assert_eq!(
-            first_task.await.unwrap().unwrap().result,
+            first_task.await.unwrap().unwrap().into_result(),
             Some(json!("first"))
         );
         assert_eq!(
-            second_task.await.unwrap().unwrap().result,
+            second_task.await.unwrap().unwrap().into_result(),
             Some(json!("second"))
         );
     }
@@ -561,8 +578,8 @@ mod tests {
     #[tokio::test]
     async fn route_delivers_to_response_map() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -586,8 +603,8 @@ mod tests {
     #[tokio::test]
     async fn route_response_map_takes_priority() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task: tokio::task::JoinHandle<Result<Response, ProtocolError>> =
@@ -607,14 +624,14 @@ mod tests {
         assert!(server.request_queue.outgoing.is_pending(&request_id));
 
         let response = task.await.unwrap().unwrap();
-        assert_eq!(response.result, Some(json!("response-map")));
+        assert_eq!(response.result().cloned(), Some(json!("response-map")));
     }
 
     #[tokio::test]
     async fn client_sender_request_timeout_does_not_swallow_late_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task = tokio::spawn(async move {
@@ -650,8 +667,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_aborted_request_does_not_swallow_late_response() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let task =
@@ -680,8 +697,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_wraparound_does_not_reuse_pending_id() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let first_sender = sender.clone();
@@ -750,15 +767,15 @@ mod tests {
         ));
 
         assert_eq!(
-            first_task.await.unwrap().unwrap().result,
+            first_task.await.unwrap().unwrap().into_result(),
             Some(json!("first"))
         );
         assert_eq!(
-            max_task.await.unwrap().unwrap().result,
+            max_task.await.unwrap().unwrap().into_result(),
             Some(json!("second"))
         );
         assert_eq!(
-            wrapped_task.await.unwrap().unwrap().result,
+            wrapped_task.await.unwrap().unwrap().into_result(),
             Some(json!("third"))
         );
     }
@@ -766,8 +783,8 @@ mod tests {
     #[tokio::test]
     async fn client_sender_timeout_preserves_other_pending_requests() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
-        let mut server: Connection<_, (), Response> = Connection::new(server_stream);
-        let mut client: Connection<_, (), Response> = Connection::new(client_stream);
+        let mut server: Connection<_, ()> = Connection::new(server_stream);
+        let mut client: Connection<_, ()> = Connection::new(client_stream);
         let sender = server.client_sender();
 
         let timeout_sender = sender.clone();
@@ -809,7 +826,10 @@ mod tests {
             ))),
             IncomingMessage::ResponseRouted
         ));
-        assert_eq!(ok_task.await.unwrap().unwrap().result, Some(json!("ok")));
+        assert_eq!(
+            ok_task.await.unwrap().unwrap().result().cloned(),
+            Some(json!("ok"))
+        );
 
         let routed = server.route(Message::Response(Response::ok(
             timed_out.id.clone(),

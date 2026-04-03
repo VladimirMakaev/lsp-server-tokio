@@ -17,6 +17,7 @@ use serde_json::Value;
 /// - `-32099` to `-32000`: JSON-RPC reserved for implementation-defined server errors
 /// - `-32899` to `-32800`: LSP reserved for LSP-specific errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 #[repr(i32)]
 pub enum ErrorCode {
     // JSON-RPC 2.0 defined errors

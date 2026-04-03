@@ -57,6 +57,7 @@ use thiserror::Error;
 ///                                       Exited
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum LifecycleState {
     /// Connection established, awaiting `initialize` request.
     ///
@@ -198,6 +199,7 @@ pub enum ExitCode {
 /// assert!(err.to_string().contains("disconnected"));
 /// ```
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProtocolError {
     /// Expected `initialize` request, but received a different message.
     ///

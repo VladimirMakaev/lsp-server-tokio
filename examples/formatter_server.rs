@@ -60,8 +60,7 @@ impl ServerState {
 #[tokio::main]
 async fn main() {
     // Create a connection over stdio for LSP communication
-    let mut conn: Connection<_, String, Response> =
-        Connection::new(lsp_server_tokio::connection::StdioTransport::new());
+    let mut conn: Connection<_, String> = Connection::new(lsp_server_tokio::StdioTransport::new());
 
     // Perform LSP initialization handshake
     let capabilities = match serde_json::to_value(server_capabilities()) {
@@ -95,7 +94,7 @@ async fn main() {
     }
 }
 
-async fn run_server<T>(mut conn: Connection<T, String, Response>, sender: ClientSender)
+async fn run_server<T>(mut conn: Connection<T, String>, sender: ClientSender)
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -123,7 +122,7 @@ where
             IncomingMessage::Request(req, token) => {
                 // Handle shutdown specially
                 if req.method == "shutdown" {
-                    conn.handle_shutdown(req.id).await.ok();
+                    conn.handle_shutdown(req.id).ok();
                     continue;
                 }
 
@@ -144,13 +143,11 @@ where
                     std::process::exit(exit_code as i32);
                 }
 
-                // Handle cancel requests
-                if conn.handle_cancel_request(&notif).is_some() {
-                    continue;
-                }
-
                 // Handle other notifications
                 handle_notification(&mut state, &notif);
+            }
+            IncomingMessage::CancelHandled => {
+                // $/cancelRequest was handled by route()
             }
             IncomingMessage::ResponseRouted => {
                 // Response was delivered to awaiting receiver
@@ -158,6 +155,7 @@ where
             IncomingMessage::ResponseUnknown(resp) => {
                 eprintln!("Received unexpected response: {:?}", resp.id);
             }
+            _ => {}
         }
     }
 }
