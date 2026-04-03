@@ -1383,9 +1383,7 @@ mod tests {
 
         // Use request queue to track an incoming request
         let token = CancellationToken::new();
-        conn.request_queue
-            .incoming
-            .register(1.into(), token);
+        conn.request_queue.incoming.register(1.into(), token);
         assert!(conn.request_queue.incoming.is_pending(&1.into()));
 
         // Complete it
