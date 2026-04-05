@@ -134,7 +134,7 @@ where
                 }
 
                 // Complete the request in the queue
-                conn.request_queue.incoming.complete(&req.id);
+                conn.request_queue_mut().incoming.complete(&req.id);
             }
             IncomingMessage::Notification(notif) => {
                 // Handle exit notification

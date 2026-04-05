@@ -53,8 +53,8 @@
 //! // Track an incoming request with a cancellation token
 //! use tokio_util::sync::CancellationToken;
 //! let token = CancellationToken::new();
-//! conn.request_queue.incoming.register(1.into(), token);
-//! assert!(conn.request_queue.incoming.is_pending(&1.into()));
+//! conn.request_queue_mut().incoming.register(1.into(), token);
+//! assert!(conn.request_queue().incoming.is_pending(&1.into()));
 //! # });
 //! ```
 //!
@@ -154,7 +154,7 @@ pub type Receiver<T> = SplitStream<Transport<T>>;
 ///
 /// - [`send()`](Connection::send): Send outbound messages (non-blocking, channel-based)
 /// - [`receiver`](Connection::receiver): A stream for receiving inbound messages
-/// - [`request_queue`](Connection::request_queue): Tracking for pending requests
+/// - [`request_queue()`](Connection::request_queue) / [`request_queue_mut()`](Connection::request_queue_mut): Tracking for pending requests
 ///
 /// At construction, a background drain task is spawned to forward messages from
 /// an internal channel to the underlying transport. This means [`send()`](Connection::send)
@@ -178,10 +178,7 @@ pub type Receiver<T> = SplitStream<Transport<T>>;
 /// let conn: Connection<_> = Connection::new(stream);
 /// # });
 /// ```
-pub struct Connection<T>
-where
-    T: AsyncRead + AsyncWrite,
-{
+pub struct Connection<T> {
     /// Channel for sending outbound messages to the background drain task.
     ///
     /// The drain task forwards messages to the underlying transport sink.
@@ -197,7 +194,7 @@ where
     ///
     /// - `request_queue.incoming`: Track requests you've received and need to respond to
     /// - `request_queue.outgoing`: Track requests you've sent and are awaiting responses for
-    pub request_queue: RequestQueue,
+    request_queue: RequestQueue,
 
     /// The current lifecycle state of the connection.
     lifecycle_state: LifecycleState,
@@ -309,7 +306,7 @@ where
     /// queue.incoming.register(1.into(), token);
     ///
     /// let conn = Connection::with_request_queue(stream, queue);
-    /// assert!(conn.request_queue.incoming.is_pending(&1.into()));
+    /// assert!(conn.request_queue().incoming.is_pending(&1.into()));
     /// # });
     /// ```
     pub fn with_request_queue(io: T, request_queue: RequestQueue) -> Self {
@@ -374,6 +371,17 @@ where
     /// convenient for simple use cases.
     pub fn on_shutdown(&self) -> impl std::future::Future<Output = ()> + '_ {
         self.shutdown_token.cancelled()
+    }
+
+    /// Returns a reference to the request queue.
+    #[must_use]
+    pub fn request_queue(&self) -> &RequestQueue {
+        &self.request_queue
+    }
+
+    /// Returns a mutable reference to the request queue.
+    pub fn request_queue_mut(&mut self) -> &mut RequestQueue {
+        &mut self.request_queue
     }
 }
 
@@ -450,7 +458,7 @@ where
     ///             // Handle request with cooperative cancellation
     ///             println!("Request: {}", req.method);
     ///             // Use token.cancelled().await in select! for cancellation
-    ///             // After handling, call conn.request_queue.incoming.complete(&req.id)
+    ///             // After handling, call conn.request_queue_mut().incoming.complete(&req.id)
     ///         }
     ///         IncomingMessage::Notification(notif) => {
     ///             // Handle notification
@@ -685,7 +693,7 @@ where
     /// let mut conn: Connection<_> = Connection::new(client_stream);
     ///
     /// // Register an outgoing request
-    /// let rx = conn.request_queue.outgoing.register(42.into());
+    /// let rx = conn.request_queue_mut().outgoing.register(42.into());
     ///
     /// // Cancel it
     /// let was_pending = conn.cancel(42).unwrap();
@@ -1384,11 +1392,11 @@ mod tests {
 
         // Use request queue to track an incoming request
         let token = CancellationToken::new();
-        conn.request_queue.incoming.register(1.into(), token);
-        assert!(conn.request_queue.incoming.is_pending(&1.into()));
+        conn.request_queue_mut().incoming.register(1.into(), token);
+        assert!(conn.request_queue().incoming.is_pending(&1.into()));
 
         // Complete it
-        assert!(conn.request_queue.incoming.complete(&1.into()));
+        assert!(conn.request_queue_mut().incoming.complete(&1.into()));
     }
 
     #[tokio::test]
@@ -1399,7 +1407,7 @@ mod tests {
         queue.incoming.register(42.into(), token);
 
         let conn = Connection::with_request_queue(stream, queue);
-        assert!(conn.request_queue.incoming.is_pending(&42.into()));
+        assert!(conn.request_queue().incoming.is_pending(&42.into()));
     }
 
     #[tokio::test]
@@ -1408,11 +1416,11 @@ mod tests {
         let mut conn: Connection<_> = Connection::new(stream);
 
         // Register an outgoing request
-        let rx = conn.request_queue.outgoing.register(1.into());
-        assert!(conn.request_queue.outgoing.is_pending(&1.into()));
+        let rx = conn.request_queue_mut().outgoing.register(1.into());
+        assert!(conn.request_queue().outgoing.is_pending(&1.into()));
 
         // Complete it with a response
-        let completed = conn.request_queue.outgoing.complete(
+        let completed = conn.request_queue_mut().outgoing.complete(
             &1.into(),
             Response::ok(1, serde_json::json!("response data")),
         );
@@ -1494,8 +1502,8 @@ mod tests {
         let conn: StdioConnection = Connection::new(StdioTransport::new());
 
         assert_eq!(conn.lifecycle_state(), LifecycleState::Uninitialized);
-        assert!(!conn.request_queue.incoming.is_pending(&1.into()));
-        assert!(!conn.request_queue.outgoing.is_pending(&1.into()));
+        assert!(!conn.request_queue().incoming.is_pending(&1.into()));
+        assert!(!conn.request_queue().outgoing.is_pending(&1.into()));
     }
 
     #[tokio::test]
@@ -1758,7 +1766,7 @@ mod tests {
                 // Token should not be cancelled yet
                 assert!(!token.is_cancelled());
                 // Request should be auto-registered
-                assert!(conn.request_queue.incoming.is_pending(&42.into()));
+                assert!(conn.request_queue().incoming.is_pending(&42.into()));
             }
             _ => panic!("Expected IncomingMessage::Request"),
         }
@@ -1790,7 +1798,7 @@ mod tests {
         let mut conn: Connection<_> = Connection::new(stream);
 
         // Register an outgoing request
-        let rx = conn.request_queue.outgoing.register(42.into());
+        let rx = conn.request_queue_mut().outgoing.register(42.into());
 
         // Create a matching response
         let response = Response::ok(42, json!({"result": "success"}));
@@ -1859,7 +1867,10 @@ mod tests {
         let mut conn: Connection<_> = Connection::new(stream);
 
         // Register with string ID
-        let rx = conn.request_queue.outgoing.register("request-abc".into());
+        let rx = conn
+            .request_queue_mut()
+            .outgoing
+            .register("request-abc".into());
 
         // Create matching response
         let response = Response::ok("request-abc", json!(null));
@@ -1881,9 +1892,9 @@ mod tests {
         let mut conn: Connection<_> = Connection::new(stream);
 
         // Register multiple outgoing requests
-        let rx1 = conn.request_queue.outgoing.register(1.into());
-        let rx2 = conn.request_queue.outgoing.register(2.into());
-        let rx3 = conn.request_queue.outgoing.register(3.into());
+        let rx1 = conn.request_queue_mut().outgoing.register(1.into());
+        let rx2 = conn.request_queue_mut().outgoing.register(2.into());
+        let rx3 = conn.request_queue_mut().outgoing.register(3.into());
 
         // Route responses out of order
         let result2 = conn.route(Message::Response(Response::ok(2, json!("second"))));
@@ -1912,7 +1923,7 @@ mod tests {
         let mut conn: Connection<_> = Connection::new(stream);
 
         // Register an outgoing request (we won't await it in this sync test)
-        let _rx = conn.request_queue.outgoing.register(42.into());
+        let _rx = conn.request_queue_mut().outgoing.register(42.into());
 
         // Route an error response
         let response = Response::err(
@@ -2054,7 +2065,7 @@ mod tests {
         });
 
         // Cancel the request
-        let _ = conn.request_queue.incoming.cancel(&1.into());
+        let _ = conn.request_queue_mut().incoming.cancel(&1.into());
 
         // Handler should complete quickly
         let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle)
@@ -2100,12 +2111,12 @@ mod tests {
         let mut server: Connection<_> = Connection::new(server_stream);
 
         // Register an outgoing request on client
-        let rx = client.request_queue.outgoing.register(42.into());
+        let rx = client.request_queue_mut().outgoing.register(42.into());
 
         // Cancel it - should send notification and remove from queue
         let was_pending = client.cancel(42).unwrap();
         assert!(was_pending);
-        assert!(!client.request_queue.outgoing.is_pending(&42.into()));
+        assert!(!client.request_queue().outgoing.is_pending(&42.into()));
 
         // Server should receive the $/cancelRequest notification
         let msg = server.receiver.next().await.unwrap().unwrap();
@@ -2138,7 +2149,10 @@ mod tests {
         let mut server: Connection<_> = Connection::new(server_stream);
 
         // Register with string ID
-        let rx = client.request_queue.outgoing.register("req-abc".into());
+        let rx = client
+            .request_queue_mut()
+            .outgoing
+            .register("req-abc".into());
 
         // Cancel it
         let was_pending = client.cancel("req-abc").unwrap();
@@ -2422,7 +2436,7 @@ mod tests {
         let sender = server.client_sender();
 
         // Register the same ID in both response_map (via ClientSender) and outgoing queue
-        let mut outgoing_rx = server.request_queue.outgoing.register(1.into());
+        let mut outgoing_rx = server.request_queue_mut().outgoing.register(1.into());
 
         let sender_clone = sender.clone();
         let req_task = tokio::spawn(async move { sender_clone.request("test", None).await });
