@@ -476,6 +476,24 @@ pub enum Message {
     Notification(Notification),
 }
 
+impl From<Request> for Message {
+    fn from(req: Request) -> Self {
+        Message::Request(req)
+    }
+}
+
+impl From<Response> for Message {
+    fn from(resp: Response) -> Self {
+        Message::Response(resp)
+    }
+}
+
+impl From<Notification> for Message {
+    fn from(notif: Notification) -> Self {
+        Message::Notification(notif)
+    }
+}
+
 impl Message {
     /// Returns `true` if this is a Request message.
     #[must_use]
@@ -493,6 +511,60 @@ impl Message {
     #[must_use]
     pub fn is_notification(&self) -> bool {
         matches!(self, Message::Notification(_))
+    }
+
+    /// Returns a reference to the inner [`Request`], if this is a Request message.
+    #[must_use]
+    pub fn as_request(&self) -> Option<&Request> {
+        match self {
+            Message::Request(req) => Some(req),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner [`Response`], if this is a Response message.
+    #[must_use]
+    pub fn as_response(&self) -> Option<&Response> {
+        match self {
+            Message::Response(resp) => Some(resp),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner [`Notification`], if this is a Notification message.
+    #[must_use]
+    pub fn as_notification(&self) -> Option<&Notification> {
+        match self {
+            Message::Notification(notif) => Some(notif),
+            _ => None,
+        }
+    }
+
+    /// Consumes the message and returns the inner [`Request`], if this is a Request message.
+    #[must_use]
+    pub fn into_request(self) -> Option<Request> {
+        match self {
+            Message::Request(req) => Some(req),
+            _ => None,
+        }
+    }
+
+    /// Consumes the message and returns the inner [`Response`], if this is a Response message.
+    #[must_use]
+    pub fn into_response(self) -> Option<Response> {
+        match self {
+            Message::Response(resp) => Some(resp),
+            _ => None,
+        }
+    }
+
+    /// Consumes the message and returns the inner [`Notification`], if this is a Notification message.
+    #[must_use]
+    pub fn into_notification(self) -> Option<Notification> {
+        match self {
+            Message::Notification(notif) => Some(notif),
+            _ => None,
+        }
     }
 }
 
@@ -922,5 +994,90 @@ mod tests {
         let resp: Response = serde_json::from_str(json).unwrap();
         assert!(resp.result().is_some());
         assert!(resp.result().unwrap().is_null());
+    }
+
+    // ============== From Impls Tests ==============
+
+    #[test]
+    fn from_request_for_message() {
+        let req = Request::new(1, "test", None);
+        let msg: Message = req.into();
+        assert!(msg.is_request());
+    }
+
+    #[test]
+    fn from_response_for_message() {
+        let resp = Response::ok(1, json!(null));
+        let msg: Message = resp.into();
+        assert!(msg.is_response());
+    }
+
+    #[test]
+    fn from_notification_for_message() {
+        let notif = Notification::new("test", None);
+        let msg: Message = notif.into();
+        assert!(msg.is_notification());
+    }
+
+    // ============== Message Accessor Tests ==============
+
+    #[test]
+    fn message_as_request() {
+        let msg = Message::Request(Request::new(1, "test", None));
+        assert!(msg.as_request().is_some());
+        assert_eq!(msg.as_request().unwrap().method, "test");
+        assert!(msg.as_response().is_none());
+        assert!(msg.as_notification().is_none());
+    }
+
+    #[test]
+    fn message_as_response() {
+        let msg = Message::Response(Response::ok(1, json!(null)));
+        assert!(msg.as_response().is_some());
+        assert!(msg.as_response().unwrap().is_ok());
+        assert!(msg.as_request().is_none());
+        assert!(msg.as_notification().is_none());
+    }
+
+    #[test]
+    fn message_as_notification() {
+        let msg = Message::Notification(Notification::new("test", None));
+        assert!(msg.as_notification().is_some());
+        assert_eq!(msg.as_notification().unwrap().method, "test");
+        assert!(msg.as_request().is_none());
+        assert!(msg.as_response().is_none());
+    }
+
+    #[test]
+    fn message_into_request() {
+        let msg = Message::Request(Request::new(1, "test", None));
+        let req = msg.into_request().unwrap();
+        assert_eq!(req.method, "test");
+    }
+
+    #[test]
+    fn message_into_response() {
+        let msg = Message::Response(Response::ok(1, json!(null)));
+        let resp = msg.into_response().unwrap();
+        assert!(resp.is_ok());
+    }
+
+    #[test]
+    fn message_into_notification() {
+        let msg = Message::Notification(Notification::new("test", None));
+        let notif = msg.into_notification().unwrap();
+        assert_eq!(notif.method, "test");
+    }
+
+    #[test]
+    fn message_into_wrong_variant_returns_none() {
+        let msg = Message::Request(Request::new(1, "test", None));
+        assert!(msg.into_response().is_none());
+
+        let msg = Message::Response(Response::ok(1, json!(null)));
+        assert!(msg.into_notification().is_none());
+
+        let msg = Message::Notification(Notification::new("test", None));
+        assert!(msg.into_request().is_none());
     }
 }

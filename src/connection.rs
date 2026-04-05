@@ -83,6 +83,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client_sender::ResponseMap;
 use crate::lifecycle::{ExitCode, LifecycleState, ProtocolError};
+use crate::routing::{EXIT_METHOD, INITIALIZED_METHOD, INITIALIZE_METHOD};
 use crate::ClientSender;
 use crate::{transport, Message, RequestQueue, Transport};
 
@@ -756,7 +757,7 @@ where
         loop {
             match self.receiver.next().await {
                 Some(Ok(Message::Request(req))) => {
-                    if req.method == "initialize" {
+                    if req.method == INITIALIZE_METHOD {
                         self.lifecycle_state = LifecycleState::Initializing;
                         return Ok((req.id, req.params.unwrap_or(serde_json::Value::Null)));
                     }
@@ -773,7 +774,7 @@ where
                     // Continue waiting for initialize
                 }
                 Some(Ok(Message::Notification(notif))) => {
-                    if notif.method == "exit" {
+                    if notif.method == EXIT_METHOD {
                         return Err(ProtocolError::Disconnected);
                     }
                     // Drop other notifications silently
@@ -847,7 +848,7 @@ where
             loop {
                 match self.receiver.next().await {
                     Some(Ok(Message::Notification(notif))) => {
-                        if notif.method == "initialized" {
+                        if notif.method == INITIALIZED_METHOD {
                             self.lifecycle_state = LifecycleState::Running;
                             return Ok(());
                         }
