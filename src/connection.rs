@@ -77,7 +77,7 @@ use std::task::{Context, Poll};
 use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use pin_project_lite::pin_project;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, Stdin, Stdout};
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf, Stdin, Stdout};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -1231,6 +1231,38 @@ impl Connection<StdioTransport> {
     }
 }
 
+impl Connection<DuplexStream> {
+    /// Creates a pair of connected in-memory connections for testing.
+    ///
+    /// Messages sent on one connection are received by the other.
+    /// Both connections have independent request queues, lifecycle state,
+    /// and [`ClientSender`] handles.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer_size` - Size of the internal buffer in bytes (1024-8192 recommended)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use futures::StreamExt;
+    /// use lsp_server_tokio::{Connection, Message, Request};
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let (mut client, mut server) = Connection::pair(4096);
+    ///
+    /// client.send(Request::new(1, "test", None).into()).unwrap();
+    /// let msg = server.receiver.next().await.unwrap().unwrap();
+    /// assert!(msg.is_request());
+    /// # });
+    /// ```
+    #[must_use]
+    pub fn pair(buffer_size: usize) -> (Self, Self) {
+        let (a, b) = tokio::io::duplex(buffer_size);
+        (Connection::new(a), Connection::new(b))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1433,6 +1465,31 @@ mod tests {
             response.result().cloned(),
             Some(serde_json::json!("response data"))
         );
+    }
+
+    #[tokio::test]
+    async fn connection_pair_test() {
+        let (mut client, mut server) = Connection::pair(4096);
+
+        // Send request from client to server
+        client
+            .send(Request::new(1, "textDocument/hover", None).into())
+            .unwrap();
+
+        let msg = server.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_request());
+        let req = msg.into_request().unwrap();
+        assert_eq!(req.method, "textDocument/hover");
+
+        // Send response back
+        server
+            .send(Response::ok(req.id, json!({"contents": "hello"})).into())
+            .unwrap();
+
+        let msg = client.receiver.next().await.unwrap().unwrap();
+        assert!(msg.is_response());
+        let resp = msg.into_response().unwrap();
+        assert!(resp.is_ok());
     }
 
     // Note: Connection::stdio() cannot be tested in unit tests as it requires

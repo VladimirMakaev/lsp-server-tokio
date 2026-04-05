@@ -41,6 +41,9 @@ use crate::Message;
 /// The header terminator sequence for LSP wire protocol (CRLF CRLF).
 const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
 
+/// The default maximum Content-Length value (10 MB).
+const DEFAULT_MAX_CONTENT_LENGTH: usize = 10 * 1024 * 1024;
+
 /// LSP wire protocol codec implementing Content-Length framing.
 ///
 /// This codec handles encoding and decoding of LSP [`Message`] types using
@@ -60,24 +63,49 @@ const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
 /// - Returns `Ok(None)` if the body is incomplete
 /// - Returns `Ok(Some(message))` when a complete message is available
 ///
+/// A maximum Content-Length guard (default 10 MB) prevents memory exhaustion
+/// from malformed or malicious input.
+///
 /// # Thread Safety
 ///
 /// `LspCodec` maintains internal parsing state and should not be shared between
 /// concurrent readers. Use one codec instance per direction (read/write) or
 /// use `Framed` which handles this correctly.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LspCodec {
     /// The content length parsed from headers, None if still reading headers.
     content_length: Option<usize>,
+    /// Maximum allowed Content-Length value.
+    max_content_length: usize,
 }
 
 impl LspCodec {
-    /// Creates a new `LspCodec` ready to encode and decode messages.
+    /// Creates a new `LspCodec` with the default max content length (10 MB).
     #[must_use]
     pub fn new() -> Self {
         Self {
             content_length: None,
+            max_content_length: DEFAULT_MAX_CONTENT_LENGTH,
         }
+    }
+
+    /// Creates a new `LspCodec` with a custom max content length.
+    ///
+    /// # Arguments
+    ///
+    /// * `max` - Maximum allowed Content-Length in bytes
+    #[must_use]
+    pub fn with_max_content_length(max: usize) -> Self {
+        Self {
+            content_length: None,
+            max_content_length: max,
+        }
+    }
+}
+
+impl Default for LspCodec {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -96,6 +124,17 @@ impl Decoder for LspCodec {
             // Parse Content-Length from headers
             let headers = &src[..header_end];
             let content_length = parse_content_length(headers)?;
+
+            // Reject messages that exceed the maximum allowed size
+            if content_length > self.max_content_length {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Content-Length {content_length} exceeds maximum {}",
+                        self.max_content_length
+                    ),
+                ));
+            }
 
             // Remove headers from buffer (including terminator)
             src.advance(header_end + HEADER_TERMINATOR.len());
@@ -499,5 +538,62 @@ mod tests {
 
         let result = codec.decode(&mut buf);
         assert!(result.is_err());
+    }
+
+    // ============== Content-Length Guard Tests ==============
+
+    #[test]
+    fn decode_at_max_limit_passes() {
+        let json_body = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
+        // Set max to exactly the body size
+        let mut codec = LspCodec::with_max_content_length(json_body.len());
+        let mut buf = BytesMut::new();
+
+        let framed = format!("Content-Length: {}\r\n\r\n{}", json_body.len(), json_body);
+        buf.extend_from_slice(framed.as_bytes());
+
+        let msg = codec.decode(&mut buf).unwrap().unwrap();
+        assert!(msg.is_request());
+    }
+
+    #[test]
+    fn decode_over_max_limit_rejected() {
+        let json_body = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
+        // Set max to one less than body size
+        let mut codec = LspCodec::with_max_content_length(json_body.len() - 1);
+        let mut buf = BytesMut::new();
+
+        let framed = format!("Content-Length: {}\r\n\r\n{}", json_body.len(), json_body);
+        buf.extend_from_slice(framed.as_bytes());
+
+        let result = codec.decode(&mut buf);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn decode_custom_limit_works() {
+        // Very small custom limit
+        let mut codec = LspCodec::with_max_content_length(10);
+        let mut buf = BytesMut::new();
+
+        let json_body = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
+        let framed = format!("Content-Length: {}\r\n\r\n{}", json_body.len(), json_body);
+        buf.extend_from_slice(framed.as_bytes());
+
+        let result = codec.decode(&mut buf);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn default_max_content_length_is_10mb() {
+        let codec = LspCodec::new();
+        assert_eq!(codec.max_content_length, 10 * 1024 * 1024);
+
+        let codec_default = LspCodec::default();
+        assert_eq!(codec_default.max_content_length, 10 * 1024 * 1024);
     }
 }
