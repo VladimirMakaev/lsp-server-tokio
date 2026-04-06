@@ -614,14 +614,17 @@ mod tests {
             Message::Request(request) => request.id,
             other => panic!("expected request, got {other:?}"),
         };
-        let _outgoing_rx = server.request_queue.outgoing.register(request_id.clone());
+        let _outgoing_rx = server
+            .request_queue_mut()
+            .outgoing
+            .register(request_id.clone());
 
         let routed = server.route(Message::Response(Response::ok(
             request_id.clone(),
             json!("response-map"),
         )));
         assert!(matches!(routed, IncomingMessage::ResponseRouted));
-        assert!(server.request_queue.outgoing.is_pending(&request_id));
+        assert!(server.request_queue().outgoing.is_pending(&request_id));
 
         let response = task.await.unwrap().unwrap();
         assert_eq!(response.result().cloned(), Some(json!("response-map")));
