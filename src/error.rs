@@ -3,6 +3,8 @@
 //! This module provides the [`ErrorCode`] enum with all LSP specification error codes
 //! and the [`ResponseError`] struct for constructing error responses.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -47,6 +49,12 @@ pub enum ErrorCode {
     ContentModified = -32801,
     /// The client has canceled a request and a server has detected the cancel.
     RequestCancelled = -32800,
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}({})", *self as i32)
+    }
 }
 
 impl From<ErrorCode> for i32 {
@@ -242,5 +250,18 @@ mod tests {
         let obj = json.as_object().unwrap();
         // The "data" key should not exist when data is None
         assert!(!obj.contains_key("data"));
+    }
+
+    #[test]
+    fn error_code_display() {
+        assert_eq!(
+            format!("{}", ErrorCode::MethodNotFound),
+            "MethodNotFound(-32601)"
+        );
+        assert_eq!(format!("{}", ErrorCode::ParseError), "ParseError(-32700)");
+        assert_eq!(
+            format!("{}", ErrorCode::RequestCancelled),
+            "RequestCancelled(-32800)"
+        );
     }
 }

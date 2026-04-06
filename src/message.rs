@@ -11,6 +11,9 @@
 //! - **Response**: Has `id` AND (`result` OR `error`) fields
 //! - **Notification**: Has `method` field but NO `id` field
 
+use std::fmt;
+
+use serde::de::DeserializeOwned;
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use serde_json::Value;
 
@@ -65,6 +68,33 @@ impl Request {
             id: id.into(),
             method: method.into(),
             params,
+        }
+    }
+
+    /// Deserializes the request params into a typed structure.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if params are missing or malformed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::Request;
+    /// use serde::Deserialize;
+    /// use serde_json::json;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct HoverParams { line: u32 }
+    ///
+    /// let req = Request::new(1, "hover", Some(json!({"line": 42})));
+    /// let params: HoverParams = req.parse_params().unwrap();
+    /// assert_eq!(params.line, 42);
+    /// ```
+    pub fn parse_params<P: DeserializeOwned>(&self) -> Result<P, serde_json::Error> {
+        match &self.params {
+            Some(value) => serde_json::from_value(value.clone()),
+            None => Err(serde::de::Error::custom("missing params")),
         }
     }
 }
@@ -286,6 +316,32 @@ impl Response {
         }
     }
 
+    /// Creates a successful response by serializing the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if serialization fails.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::Response;
+    /// use serde::Serialize;
+    ///
+    /// #[derive(Serialize)]
+    /// struct HoverResult { contents: String }
+    ///
+    /// let result = HoverResult { contents: "fn main()".into() };
+    /// let resp = Response::ok_serialize(1, &result).unwrap();
+    /// assert!(resp.is_ok());
+    /// ```
+    pub fn ok_serialize(
+        id: impl Into<RequestId>,
+        result: &impl Serialize,
+    ) -> Result<Self, serde_json::Error> {
+        serde_json::to_value(result).map(|v| Self::ok(id, v))
+    }
+
     /// Creates a parse error response where the request id could not be determined.
     ///
     /// Per JSON-RPC 2.0 spec, the id MUST be null when the request id cannot be parsed.
@@ -389,6 +445,31 @@ impl Notification {
             params,
         }
     }
+
+    /// Deserializes the notification params into a typed structure.
+    ///
+    /// Returns `None` if params are missing or deserialization fails.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lsp_server_tokio::Notification;
+    /// use serde::Deserialize;
+    /// use serde_json::json;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct DidOpenParams { uri: String }
+    ///
+    /// let notif = Notification::new("didOpen", Some(json!({"uri": "file:///test.rs"})));
+    /// let params: DidOpenParams = notif.parse_params().unwrap();
+    /// assert_eq!(params.uri, "file:///test.rs");
+    /// ```
+    #[must_use]
+    pub fn parse_params<P: DeserializeOwned>(&self) -> Option<P> {
+        self.params
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
 }
 
 impl Serialize for Notification {
@@ -476,6 +557,29 @@ pub enum Message {
     Notification(Notification),
 }
 
+impl fmt::Display for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "request #{} {}", self.id, self.method)
+    }
+}
+
+impl fmt::Display for Response {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (&self.id, &self.body) {
+            (Some(id), ResponseBody::Success(_)) => write!(f, "response #{id} ok"),
+            (Some(id), ResponseBody::Error(e)) => write!(f, "response #{id} err({0})", e.code),
+            (None, ResponseBody::Error(e)) => write!(f, "response err({0})", e.code),
+            (None, ResponseBody::Success(_)) => write!(f, "response ok"),
+        }
+    }
+}
+
+impl fmt::Display for Notification {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "notification {}", self.method)
+    }
+}
+
 impl From<Request> for Message {
     fn from(req: Request) -> Self {
         Message::Request(req)
@@ -491,6 +595,16 @@ impl From<Response> for Message {
 impl From<Notification> for Message {
     fn from(notif: Notification) -> Self {
         Message::Notification(notif)
+    }
+}
+
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Message::Request(req) => req.fmt(f),
+            Message::Response(resp) => resp.fmt(f),
+            Message::Notification(notif) => notif.fmt(f),
+        }
     }
 }
 
@@ -1079,5 +1193,139 @@ mod tests {
 
         let msg = Message::Notification(Notification::new("test", None));
         assert!(msg.into_request().is_none());
+    }
+
+    // ============== parse_params Tests ==============
+
+    #[test]
+    fn request_parse_params_success() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Params {
+            line: u32,
+        }
+        let req = Request::new(1, "hover", Some(json!({"line": 42})));
+        let params: Params = req.parse_params().unwrap();
+        assert_eq!(params, Params { line: 42 });
+    }
+
+    #[test]
+    fn request_parse_params_missing() {
+        #[derive(serde::Deserialize, Debug)]
+        struct Params {
+            _line: u32,
+        }
+        let req = Request::new(1, "hover", None);
+        let err = req.parse_params::<Params>();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("missing params"));
+    }
+
+    #[test]
+    fn request_parse_params_malformed() {
+        #[derive(serde::Deserialize)]
+        struct Params {
+            _line: u32,
+        }
+        let req = Request::new(1, "hover", Some(json!("not an object")));
+        assert!(req.parse_params::<Params>().is_err());
+    }
+
+    #[test]
+    fn notification_parse_params_success() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Params {
+            uri: String,
+        }
+        let notif = Notification::new("didOpen", Some(json!({"uri": "file:///a.rs"})));
+        let params: Params = notif.parse_params().unwrap();
+        assert_eq!(
+            params,
+            Params {
+                uri: "file:///a.rs".into()
+            }
+        );
+    }
+
+    #[test]
+    fn notification_parse_params_missing() {
+        #[derive(serde::Deserialize)]
+        struct Params {
+            _uri: String,
+        }
+        let notif = Notification::new("didOpen", None);
+        assert!(notif.parse_params::<Params>().is_none());
+    }
+
+    #[test]
+    fn notification_parse_params_malformed() {
+        #[derive(serde::Deserialize)]
+        struct Params {
+            _uri: String,
+        }
+        let notif = Notification::new("didOpen", Some(json!(123)));
+        assert!(notif.parse_params::<Params>().is_none());
+    }
+
+    // ============== Response::ok_serialize Tests ==============
+
+    #[test]
+    fn response_ok_serialize_success() {
+        #[derive(serde::Serialize)]
+        struct Result {
+            contents: String,
+        }
+        let result = Result {
+            contents: "hello".into(),
+        };
+        let resp = Response::ok_serialize(1, &result).unwrap();
+        assert!(resp.is_ok());
+        assert_eq!(resp.result().unwrap()["contents"], "hello");
+    }
+
+    // ============== Display Tests ==============
+
+    #[test]
+    fn display_request() {
+        let req = Request::new(42, "textDocument/hover", None);
+        assert_eq!(format!("{req}"), "request #42 textDocument/hover");
+    }
+
+    #[test]
+    fn display_response_ok() {
+        let resp = Response::ok(42, json!(null));
+        assert_eq!(format!("{resp}"), "response #42 ok");
+    }
+
+    #[test]
+    fn display_response_err() {
+        let resp = Response::err(
+            42,
+            ResponseError::new(ErrorCode::MethodNotFound, "not found"),
+        );
+        assert_eq!(format!("{resp}"), "response #42 err(-32601)");
+    }
+
+    #[test]
+    fn display_response_parse_error() {
+        let resp = Response::parse_error(ResponseError::new(ErrorCode::ParseError, "parse error"));
+        assert_eq!(format!("{resp}"), "response err(-32700)");
+    }
+
+    #[test]
+    fn display_notification() {
+        let notif = Notification::new("textDocument/didOpen", None);
+        assert_eq!(format!("{notif}"), "notification textDocument/didOpen");
+    }
+
+    #[test]
+    fn display_message_delegates() {
+        let msg = Message::Request(Request::new(1, "test", None));
+        assert_eq!(format!("{msg}"), "request #1 test");
+
+        let msg = Message::Response(Response::ok(1, json!(null)));
+        assert_eq!(format!("{msg}"), "response #1 ok");
+
+        let msg = Message::Notification(Notification::new("test", None));
+        assert_eq!(format!("{msg}"), "notification test");
     }
 }
