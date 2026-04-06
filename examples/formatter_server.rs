@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use futures::StreamExt;
 use lsp_server_tokio::{
     cancelled_response, method_not_found_response, ClientSender, Connection, IncomingMessage,
-    Notification, Response,
+    Notification, Response, EXIT_METHOD, SHUTDOWN_METHOD,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -121,7 +121,7 @@ where
         match conn.route(msg) {
             IncomingMessage::Request(req, token) => {
                 // Handle shutdown specially
-                if req.method == "shutdown" {
+                if req.method == SHUTDOWN_METHOD {
                     conn.handle_shutdown(req.id).ok();
                     continue;
                 }
@@ -138,7 +138,7 @@ where
             }
             IncomingMessage::Notification(notif) => {
                 // Handle exit notification
-                if notif.method == "exit" {
+                if notif.method == EXIT_METHOD {
                     let exit_code = conn.handle_exit();
                     std::process::exit(exit_code as i32);
                 }

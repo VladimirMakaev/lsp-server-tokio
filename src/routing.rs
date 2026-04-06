@@ -32,6 +32,18 @@ use tokio_util::sync::CancellationToken;
 use crate::error::{ErrorCode, ResponseError};
 use crate::message::{Notification, Request, Response};
 
+/// The method name for the `initialize` request.
+pub const INITIALIZE_METHOD: &str = "initialize";
+
+/// The method name for the `initialized` notification.
+pub const INITIALIZED_METHOD: &str = "initialized";
+
+/// The method name for the `shutdown` request.
+pub const SHUTDOWN_METHOD: &str = "shutdown";
+
+/// The method name for the `exit` notification.
+pub const EXIT_METHOD: &str = "exit";
+
 /// Represents a classified incoming message after routing.
 ///
 /// When a [`Message`](crate::Message) is received from the transport, it is classified
